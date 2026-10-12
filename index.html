@@ -13,6 +13,97 @@
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <link rel="apple-touch-icon" href="/icon.svg" />
     <title>Folia</title>
+
+    <!--
+      诊断覆盖层（diagnostic overlay）
+      ------------------------------------------------------------------
+      为什么加：iOS 上没有 Safari 远程调试就用不了 Web Inspector，一旦 JS
+      在启动阶段抛错，界面会直接黑屏且【没有任何提示】，完全没法定位。
+      这段脚本是纯内联的，在 React 之前执行，所以即使打包出来的 bundle
+      整个挂掉，它依然能工作并把错误显示在屏幕上（截图即可排查）。
+
+      排查完成后可以整段删掉，不影响任何功能。
+      ------------------------------------------------------------------
+    -->
+    <script>
+      (function () {
+        var shown = false;
+
+        function show(kind, detail) {
+          try {
+            if (shown) { return; }
+            shown = true;
+
+            var box = document.createElement('div');
+            box.id = '__folia_diagnostic__';
+            box.style.cssText = [
+              'position:fixed', 'top:0', 'left:0', 'right:0', 'bottom:0',
+              'z-index:2147483647', 'background:#1a0000', 'color:#ffc9c9',
+              'font:12px/1.6 ui-monospace,Menlo,Consolas,monospace',
+              'padding:24px', 'padding-top:64px', 'overflow:auto',
+              'white-space:pre-wrap', 'word-break:break-all',
+              '-webkit-user-select:text', 'user-select:text'
+            ].join(';');
+
+            var title = document.createElement('div');
+            title.style.cssText = 'font-size:17px;font-weight:700;color:#ff8a8a;margin-bottom:14px';
+            title.textContent = '\u26a0\ufe0f Folia 启动失败';
+
+            var sub = document.createElement('div');
+            sub.style.cssText = 'font-size:13px;color:#ffb4b4;margin-bottom:16px';
+            sub.textContent = kind + ' \u2014\u2014 请把这一屏截图发给我';
+
+            var body = document.createElement('div');
+            body.textContent = detail || '(no detail)';
+
+            box.appendChild(title);
+            box.appendChild(sub);
+            box.appendChild(body);
+            (document.body || document.documentElement).appendChild(box);
+          } catch (e) { /* 诊断层本身不能把页面搞崩 */ }
+        }
+
+        function describe(err) {
+          if (!err) { return '(empty)'; }
+          if (err.stack) { return String(err.stack); }
+          if (err.message) { return String(err.message); }
+          try { return JSON.stringify(err); } catch (e) { return String(err); }
+        }
+
+        // 1) 同步错误 + 资源加载失败
+        window.addEventListener('error', function (event) {
+          var t = event && event.target;
+          if (t && t !== window && (t.tagName === 'SCRIPT' || t.tagName === 'LINK')) {
+            show('\u8d44\u6e90\u52a0\u8f7d\u5931\u8d25', (t.tagName === 'SCRIPT' ? t.src : t.href) || '(unknown)');
+            return;
+          }
+          show('JS \u9519\u8bef', (event && event.message ? event.message : '') + '\n\n' + describe(event && event.error));
+        }, true);
+
+        // 2) 未捕获的 Promise
+        window.addEventListener('unhandledrejection', function (event) {
+          show('Promise \u672a\u6355\u83b7', describe(event && event.reason));
+        });
+
+        // 3) 兜底：8 秒后如果 #root 还是空的，说明 React 根本没挂上
+        window.addEventListener('load', function () {
+          setTimeout(function () {
+            if (shown) { return; }
+            var root = document.getElementById('root');
+            if (!root || root.childElementCount === 0) {
+              show(
+                'React \u6ca1\u6709\u6e32\u67d3\u4efb\u4f55\u5185\u5bb9',
+                'location: ' + location.href + '\n' +
+                'readyState: ' + document.readyState + '\n' +
+                'scripts: ' + document.scripts.length + '\n' +
+                'UA: ' + navigator.userAgent
+              );
+            }
+          }, 8000);
+        });
+      })();
+    </script>
+
     <script src="/runtime-config.js"></script>
   <script type="importmap">
 {
