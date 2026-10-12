@@ -90,6 +90,25 @@ New repository secret** 里加下面这些：
 2. 拉到底部 **Artifacts** 区域
 3. 下载 `folia-unsigned-ipa`（是个 zip，解开里面是 `Folia-unsigned.ipa`）
 
+#### 关于 package-lock.json 里的国内镜像地址
+
+`package-lock.json` 里有约 1000 条 `resolved` 指向 `registry.npmmirror.com` ——
+**这是上游 folia-sonnet 仓库本来就有的**（作者用国内镜像生成的 lockfile），
+不是这次改动引入的。上游自己的 CI（`pr-unit-tests.yml` 等）一直用
+`npm ci` 跑同一份 lockfile，所以在 GitHub runner 上是可用的。
+
+已经实测确认 npmmirror 与 npmjs.org 提供的是**字节一致的 tarball**
+（抽样 4 个包，integrity 哈希完全吻合），所以两个源可以互换。
+
+- **对你本地是好事**：`npm install` 走国内镜像，快很多。
+- **如果 CI 装依赖太慢**（从美国机房拉国内 CDN），可以切回官方源：
+  ```bash
+  rm -rf node_modules package-lock.json
+  npm install --registry https://registry.npmjs.org/
+  git add package-lock.json && git commit -m "chore: 切回官方 npm 源"
+  ```
+
+
 ---
 
 ## 三、用 TrollStore 装到设备
