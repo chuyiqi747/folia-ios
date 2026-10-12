@@ -255,6 +255,12 @@ export const useNativeNowPlaying = (options: UseNativeNowPlayingOptions): void =
         // 为什么不能只在挂载时激活一次：iOS 在电话打断、其它 App 抢占、
         // 或者长时间空闲之后会把会话置回非激活状态，而重新激活不会自动发生。
         // 会话没激活 -> 后台立刻静音、锁屏也不出现播放器，症状与「功能没写」一模一样。
+        //
+        // ⚠️ 这里「每次播放都调」之所以安全，前提是原生侧 configureAudioSession()
+        // 里的 setCategory 必须幂等（只在类别不对时才调）。
+        // 曾经因为原生无条件 setCategory，而 setCategory 会重配音频路由、
+        // 掐断正在播放的音频 —— 表现就是「每次点播放只响约 1 秒就停」。
+        // 动那行代码时务必留意这个联动。
         if (playbackState === 'playing') {
             void activateAudioSession();
         }

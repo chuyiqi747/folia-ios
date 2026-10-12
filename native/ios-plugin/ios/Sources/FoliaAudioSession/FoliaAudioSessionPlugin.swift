@@ -108,13 +108,25 @@ public class FoliaAudioSessionPlugin: CAPPlugin, CAPBridgedPlugin {
     private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            // .playback 表示「这是内容播放，不是录音也不是提示音」，
-            // 它与 UIBackgroundModes=audio 配合才能后台播放。
-            // mode 保持 .default：.longFormAudio 是为有声书 / 播客设计的，
-            // 用于音乐反而会让部分系统版本在切歌时产生额外的缓冲停顿。
-            try session.setCategory(.playback, mode: .default, options: [])
+            // ⚠️⚠️ 核心修复：setCategory 必须幂等，只在类别不对时才调。
+            //
+            // setCategory 会让系统【重新配置音频路由】。如果会话已经激活、
+            // 音频正在播放，调用它会直接掐断当前播放 ——
+            // 而 JS 侧每次 playbackState 变成 playing 都会调 activate()，
+            // 于是表现成「每次点播放只响一下（约 1 秒）就停」。
+            //
+            // 之前这里无条件 setCategory，就是这个 bug 的来源。
+            if session.category != .playback {
+                // .playback 表示「这是内容播放，不是录音也不是提示音」，
+                // 它与 UIBackgroundModes=audio 配合才能后台播放。
+                // mode 保持 .default：.longFormAudio 是为有声书 / 播客设计的，
+                // 用于音乐反而会让部分系统版本在切歌时产生额外的缓冲停顿。
+                try session.setCategory(.playback, mode: .default, options: [])
+            }
 
-            // 允许 AirPlay / 蓝牙 / 车机的远程控制（锁屏按钮、方向盘按键）。
+            // setActive(true) 在已激活时是幂等的（系统直接返回），
+            // 重复调用不会打断播放；但会话被电话打断 / 被其它 App 抢占后
+            // 会变成非激活，那时必须重新激活，所以这里每次都调。
             try session.setActive(true)
             isSessionActive = true
         } catch {
