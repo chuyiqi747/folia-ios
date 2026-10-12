@@ -1,5 +1,6 @@
 import { NeteaseUser, NeteasePlaylist, NoCopyrightRecommendation, SongPrivilege, SongResult } from "../types";
 import { readProviderSessionValue, removeProviderSessionValue, writeProviderSessionValue } from './onlineMusic/providerStorage';
+import { getBuildTimeNeteaseApiBase, getRuntimeNeteaseApiBase } from './runtimeApiBase';
 
 type UnavailableSongReplacement = {
   replacementSong: SongResult;
@@ -22,20 +23,18 @@ const getElectronBridge = () => {
 const isElectronRuntime = () =>
   Boolean(getElectronBridge() && typeof getElectronBridge()?.getNeteasePort === 'function');
 
-const getConfiguredApiBase = () => {
-  const viteEnv = typeof import.meta !== 'undefined' ? (import.meta as any).env : undefined;
-  if (viteEnv && typeof viteEnv.VITE_NETEASE_API_BASE === 'string' && viteEnv.VITE_NETEASE_API_BASE) {
-    return viteEnv.VITE_NETEASE_API_BASE;
-  }
-
-  if (typeof process !== 'undefined' && typeof process.env.VITE_NETEASE_API_BASE === 'string' && process.env.VITE_NETEASE_API_BASE) {
-    return process.env.VITE_NETEASE_API_BASE;
-  }
-
-  return null;
-};
+const getConfiguredApiBase = () => getBuildTimeNeteaseApiBase();
 
 const getApiBase = async () => {
+  // A user-configured address (Settings -> 音源服务器) always wins over the
+  // build-time value. Re-read on every call so changing it takes effect
+  // immediately, without a rebuild or reinstall.
+  const runtimeApiBase = getRuntimeNeteaseApiBase();
+  if (runtimeApiBase) {
+    API_BASE = runtimeApiBase;
+    return API_BASE;
+  }
+
   if (API_BASE) return API_BASE;
 
   if (isElectronRuntime()) {
