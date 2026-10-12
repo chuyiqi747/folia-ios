@@ -1,0 +1,206 @@
+# ============================================================================
+# 在云端 macOS 上编译「未签名 IPA」
+#
+# 为什么这么设计：
+#   1. iOS 只能由 macOS 上的 Xcode 编译，Windows 上不存在这个工具链。
+#      GitHub 的 macOS runner 是免费且合法的云端 Mac。
+#   2. 「编译」和「签名」被刻意拆开：
+#        - 编译 → 云端 macOS（本文件）
+#        - 签名 → 你在 Windows 上用 Sideloadly 做（免费 Apple ID 即可）
+#      这样整条链路不需要你有 Mac，也不需要付费开发者账号。
+#   3. 公开仓库的 macOS 构建时长免费且无限量。
+#
+# 前置条件：见 docs/Windows出包指南.md
+# ============================================================================
+
+name: Build unsigned IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # 允许在 Actions 页面手动触发
+    inputs:
+      adhoc_sign:
+        description: 'TrollStore 兼容模式：给 IPA 加 ad-hoc 签名（在设备上装时报 "Unsigned App" 才需要打开）'
+        type: boolean
+        default: false
+
+# 同一分支只保留最新一次构建，避免排队
+concurrency:
+  group: ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-ios:
+    # macos-latest 在公开仓库上免费且不计额度
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@v4
+        with:
+          # package.json 里 engines.node 是 >=24.0.0，低于这个版本 npm 会报 EBADENGINE。
+          node-version: '24'
+          cache: npm
+
+      - name: 选择最新 Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          # Capacitor 8 要求 Xcode 26+。latest-stable 会选 runner 上最新的稳定版。
+          xcode-version: latest-stable
+
+      - name: 打印工具链版本
+        run: |
+          echo "--- Xcode ---"
+          xcodebuild -version
+          xcode-select -p
+          echo "--- Node ---"
+          node --version
+          npm --version
+
+      - name: 安装依赖
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      # ----------------------------------------------------------------------
+      # Web 产物。VITE_* 是构建时内联的，所以必须在这一步就注入。
+      # 未配置 Secrets 时会用空值构建 —— App 能跑起来但没有音源，
+      # 这是预期的降级行为，不会让构建失败。
+      # ----------------------------------------------------------------------
+      - name: 构建 Web 产物
+        run: npm run build:capacitor
+        env:
+          VITE_NETEASE_API_BASE: ${{ secrets.VITE_NETEASE_API_BASE }}
+          VITE_FOLIA_API_BASE: ${{ secrets.VITE_FOLIA_API_BASE }}
+          VITE_QQ_API_BASE: ${{ secrets.VITE_QQ_API_BASE }}
+          VITE_KUGOU_API_BASE: ${{ secrets.VITE_KUGOU_API_BASE }}
+
+      # ----------------------------------------------------------------------
+      # iOS 工程。
+      #
+      # 两种情况都兼容：
+      #   - 仓库里提交了 ios/  → 直接复用，保留你的自定义改动
+      #   - 没提交 ios/        → 用模板现场生成（推荐，仓库更干净）
+      #
+      # 注意：`npx cap add ios` 不依赖 Xcode，它只是解压模板压缩包，
+      #       所以你在 Windows 上也能跑出同样的结果。
+      # ----------------------------------------------------------------------
+      - name: 生成 iOS 工程（仓库未提交 ios/ 时）
+        run: |
+          if [ ! -d ios ]; then
+            echo "仓库里没有 ios/，用模板生成"
+            npx cap add ios
+          else
+            echo "复用仓库里已有的 ios/"
+          fi
+
+      - name: 同步 iOS 平台
+        run: npx cap sync ios
+
+      # ----------------------------------------------------------------------
+      # 规范化 SPM 清单里的路径分隔符。
+      #
+      # Capacitor CLI 的 util/spm.js 生成 CapApp-SPM/Package.swift 时用了
+      # path.relative() 却没包 convertToUnixPath()，在 Windows 上会写出
+      # `..\..\..\node_modules\@capacitor\app` 这种反斜杠路径 ——
+      # 而 Swift 字符串里 `\n` 是转义字符，那个文件在 macOS 上编译不过。
+      #
+      # CI 跑在 macOS 上，sync 这一步生成的结果本来就是对的；
+      # 这个步骤是兜底：保证仓库里提交的那份（Windows 生成的）不会带病进构建。
+      # ----------------------------------------------------------------------
+      - name: 规范化 iOS SPM 清单路径
+        run: node scripts/fix-ios-spm-paths.mjs
+
+      # ----------------------------------------------------------------------
+      # 图标与启动图。源图在 resources/ 下（icon.png / splash-light.png / splash-dark.png），
+      # 由 @capacitor/assets 生成 Assets.xcassets 与 LaunchScreen.storyboard。
+      #
+      # 放在 cap sync 之后：assets 写的是 ios/App/App/Assets.xcassets，
+      # 而 sync 只动 capacitor.config.json 与 web 产物，两者不冲突。
+      # 源图缺失时跳过（不阻断构建）—— 模板自带的默认图标也能出一个可用的 App。
+      # ----------------------------------------------------------------------
+      - name: 生成 iOS 图标与启动图
+        continue-on-error: true
+        run: node scripts/generate-ios-assets.mjs
+
+      # ----------------------------------------------------------------------
+      # Info.plist 权限。
+      #
+      # 注意：cap sync 并不会重写 Info.plist（只有 `cap add ios` 解压模板时会）。
+      # 但这一步仍然必须放在 add / sync 之后 —— 因为仓库里没提交 ios/ 时，
+      # 上面那一步会现场跑 `cap add ios`，把模板 plist 重新铺一遍。
+      # 脚本是幂等的，重复执行安全。
+      # ----------------------------------------------------------------------
+      - name: 写入 Info.plist 权限声明
+        run: bash scripts/apply-ios-plist.sh
+
+      # ----------------------------------------------------------------------
+      # 插件注册校验。放在编译之前 —— 插件没注册上时编译照样成功，
+      # 只有运行时才会发现，所以必须在这里就拦住。
+      # ----------------------------------------------------------------------
+      - name: 校验原生插件注册
+        run: node scripts/verify-ios-plugin.mjs
+
+      # ----------------------------------------------------------------------
+      # 编译 + 打包。逻辑放在 scripts/build-ios-unsigned.sh 里，
+      # 这样 CI 和本地 Mac 走同一条路径，不会出现两处维护导致的行为差异。
+      #
+      # 该脚本里有两个 Capacitor 8 特有的关键点（都有注释说明）：
+      #   1. 用 -project 而不是 -workspace
+      #      Capacitor 8 默认 SPM，CLI 会删掉 App.xcworkspace。
+      #      网上大量教程写的 -workspace 在 Capacitor 8 上会报文件不存在。
+      #   2. 用 -target 而不是 -scheme
+      #      Capacitor 的 iOS 模板不含共享 scheme，而 scheme 是 Xcode 打开工程时
+      #      才自动生成的，CI 上没有这一步，-scheme App 会报 scheme not found。
+      #   3. 全部关闭签名
+      #      我们只要未签名的 .app，签名交给 Windows 上的 Sideloadly。
+      #      这样构建阶段完全不需要 Apple 账号。
+      # ----------------------------------------------------------------------
+      - name: 编译并打包未签名 IPA
+        run: bash scripts/build-ios-unsigned.sh
+        env:
+          # 默认 0（纯未签名 IPA，Sideloadly 与 TrollStore 都能用）。
+          # 在 Actions 页面手动触发时勾选 adhoc_sign 会变成 1 ——
+          # 只有在 TrollStore 报 "Unsigned App" 时才需要。
+          FOLIA_ADHOC_SIGN: ${{ inputs.adhoc_sign && '1' || '0' }}
+
+      - name: 上传 IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: folia-unsigned-ipa
+          path: build/Folia-unsigned.ipa
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: 构建摘要
+        run: |
+          {
+            echo "## 构建完成"
+            echo ""
+            echo "未签名 IPA 已作为 artifact 上传，名字：\`folia-unsigned-ipa\`"
+            echo ""
+            echo "### 安装到设备（二选一）"
+            echo ""
+            echo "**路线 A：TrollStore（巨魔）—— 永久有效，不需要 Apple ID**"
+            echo "1. 在设备上用 Safari 下载这个 IPA"
+            echo "2. 点下载项 → 用「TrollStore」打开"
+            echo "3. 点 Install，完成"
+            echo ""
+            echo "> 支持范围：iOS 14.0 beta 2 – 16.6.1、16.7 RC、17.0。17.0.1+ 不支持。"
+            echo "> 装好后记得配好持久化助手，否则重启后 App 会打不开。"
+            echo ""
+            echo "**路线 B：Sideloadly 侧载 —— 需要免费 Apple ID，7 天续期**"
+            echo "1. 在本次运行的页面底部 **Artifacts** 下载 \`folia-unsigned-ipa\`"
+            echo "2. 用 **Sideloadly** 打开这个 IPA，填入 Apple ID，点 Start"
+            echo "3. 设备上：设置 → 通用 → VPN与设备管理 → 信任该描述文件"
+            echo ""
+            echo "详细排查见 \`docs/Windows出包指南.md\`。"
+          } >> "$GITHUB_STEP_SUMMARY"

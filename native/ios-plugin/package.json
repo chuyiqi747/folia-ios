@@ -1,0 +1,27 @@
+{
+  "name": "folia-audio-session",
+  "version": "1.0.0",
+  "description": "Folia iOS 原生音频会话插件：AVAudioSession 后台播放、MPNowPlayingInfoCenter 锁屏元数据、MPRemoteCommandCenter 远程控制、打断恢复。仅含原生代码，JS 侧封装在 App 的 src/native/nativeAudioBridge.ts。",
+  "license": "AGPL-3.0",
+  "files": [
+    "ios/Sources",
+    "Package.swift",
+    "FoliaAudioSession.podspec"
+  ],
+  "capacitor": {
+    "ios": {
+      "src": "ios"
+    }
+  },
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0"
+  },
+  "keywords": [
+    "capacitor",
+    "plugin",
+    "native",
+    "ios",
+    "audio",
+    "nowplaying"
+  ]
+}

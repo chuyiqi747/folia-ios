@@ -1,0 +1,89 @@
+import { Capacitor } from '@capacitor/core';
+import { Device } from '@capacitor/device';
+
+// 当前文件：统一描述 Web、Electron、Capacitor Android 与 Capacitor iOS 的运行时能力。
+//
+// 本文件基于 folia-sonnet 的 src/platform/runtime.ts 扩展而来，新增 ios 分支。
+// 原版只区分 web / electron / capacitor-android，iOS 会被错误地归入 'web'，
+// 导致 PWA 相关分支、本地音乐入口、系统栏适配全部走错路径。
+
+export type RuntimeEnvironment = 'web' | 'electron' | 'capacitor-android' | 'capacitor-ios';
+
+/** 所有 Capacitor 原生平台（Android + iOS）。 */
+export type NativeMobileEnvironment = Extract<RuntimeEnvironment, 'capacitor-android' | 'capacitor-ios'>;
+
+export const hasElectronBridge = (): boolean => (
+  typeof window !== 'undefined'
+  && Boolean((window as typeof window & { electron?: unknown }).electron)
+);
+
+const isNative = (): boolean => (
+  typeof window !== 'undefined' && Capacitor.isNativePlatform()
+);
+
+export const isCapacitorAndroid = (): boolean => (
+  isNative() && Capacitor.getPlatform() === 'android'
+);
+
+export const isCapacitorIOS = (): boolean => (
+  isNative() && Capacitor.getPlatform() === 'ios'
+);
+
+/** 任意 Capacitor 原生移动端（Android 或 iOS）。 */
+export const isCapacitorMobile = (): boolean => isCapacitorAndroid() || isCapacitorIOS();
+
+/**
+ * 是否运行在 iOS 的 iPad 上。
+ * iPadOS 布局宽度足够时应当走桌面式分栏，而不是手机单栏。
+ * 在 iOS 13+ 上 iPad 默认报告自己为 Macintosh UA，因此必须依赖原生层判断，
+ * 不能只靠 UA 里的 'iPad' 字样。
+ */
+export const isIPadOS = (): boolean => {
+  if (!isCapacitorIOS()) return false;
+  // iPadOS 13+ 的 Safari 桌面模式 UA 里没有 'iPad'，用 maxTouchPoints 兜底。
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent;
+  return /iPad/.test(ua) || (ua.includes('Macintosh') && navigator.maxTouchPoints > 1);
+};
+
+export const getRuntimeEnvironment = (): RuntimeEnvironment => {
+  if (hasElectronBridge()) return 'electron';
+  if (isCapacitorAndroid()) return 'capacitor-android';
+  if (isCapacitorIOS()) return 'capacitor-ios';
+  return 'web';
+};
+
+/**
+ * 本地音乐导入依赖目录读取能力（File System Access / 目录选择器）。
+ * 原生移动端一律不支持，入口需要隐藏。
+ */
+export const supportsLocalMusicImport = (): boolean => !isCapacitorMobile();
+
+/**
+ * 是否需要在 UI 里为刘海 / 灵动岛 / 底部 Home Indicator 预留安全区。
+ * iOS 一定会返回 true；Android 视厂商实现而定，交给 CSS env() 处理。
+ */
+export const needsSafeAreaInsets = (): boolean => isCapacitorIOS() || isCapacitorAndroid();
+
+/**
+ * PWA Service Worker 只在 Web 环境注册。
+ * 任一原生壳（Android / iOS）都不注册，否则会出现「壳内又装了一层 SW」的更新死循环。
+ */
+export const supportsServiceWorker = (): boolean => getRuntimeEnvironment() === 'web';
+
+/**
+ * 是否应该显示「刷新 / 重新加载页面」这类浏览器语义的操作。
+ */
+export const supportsPageReload = (): boolean => getRuntimeEnvironment() === 'web';
+
+/** 供调试面板与日志使用的一句话环境描述。 */
+export const describeRuntime = async (): Promise<string> => {
+  const env = getRuntimeEnvironment();
+  if (env === 'web' || env === 'electron') return env;
+  try {
+    const info = await Device.getInfo();
+    return `${env} (${info.model}, iOS ${info.osVersion})`;
+  } catch {
+    return env;
+  }
+};

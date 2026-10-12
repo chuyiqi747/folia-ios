@@ -1,0 +1,244 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: 'Folia Noto Serif SC';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('https://cdn.jsdmirror.cn/npm/@fontsource/noto-serif-sc@5.2.9/files/noto-serif-sc-chinese-simplified-400-normal.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Folia Noto Serif SC';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('https://cdn.jsdmirror.cn/npm/@fontsource/noto-serif-sc@5.2.9/files/noto-serif-sc-chinese-simplified-500-normal.woff2') format('woff2');
+}
+
+/* Custom Global Styles */
+body {
+  background-color: #09090b;
+  color: #e4e4e7;
+  font-family: 'Inter', sans-serif;
+  overflow: hidden;
+}
+
+:root {
+  --scrollbar-track: #18181b;
+  --scrollbar-thumb: #3f3f46;
+  --scrollbar-thumb-hover: #52525b;
+  --folia-safe-area-top: env(safe-area-inset-top, 0px);
+  --folia-safe-area-right: env(safe-area-inset-right, 0px);
+  --folia-safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --folia-safe-area-left: env(safe-area-inset-left, 0px);
+}
+
+html[data-runtime='capacitor-android'] .fixed.inset-0,
+html[data-runtime='capacitor-ios'] .fixed.inset-0 {
+  top: var(--folia-safe-area-top);
+  right: var(--folia-safe-area-right);
+  bottom: var(--folia-safe-area-bottom);
+  left: var(--folia-safe-area-left);
+  width: auto;
+  height: auto;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+@media (max-width: 768px) {
+  .mobile-hide-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  
+  .mobile-hide-scrollbar::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+}
+
+.visualizer-overlay-scrollbar {
+  /* Remove standard scrollbar-width/color to prevent Chromium from ignoring -webkit-scrollbar styles */
+}
+
+.visualizer-overlay-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.visualizer-overlay-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.visualizer-overlay-scrollbar::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb-color, rgba(255, 255, 255, 0.18));
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.visualizer-overlay-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover-color, rgba(255, 255, 255, 0.3));
+}
+
+.visualizer-overlay-scrollbar::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Polaroid Card theme-adaptive styles */
+.theme-polaroid-card {
+  background-color: color-mix(in srgb, var(--bg-color) 95%, transparent) !important;
+  border-color: color-mix(in srgb, var(--text-primary) 5%, transparent) !important;
+  color: var(--text-primary) !important;
+  transition: all 0.3s ease;
+}
+
+.theme-polaroid-card:hover {
+  border-color: color-mix(in srgb, var(--text-primary) 32%, transparent) !important;
+}
+
+/* Glass panel (search box, sidebar) theme-adaptive styles */
+.theme-glass-panel {
+  background-color: color-mix(in srgb, var(--bg-color) 85%, transparent) !important;
+  border-color: color-mix(in srgb, var(--text-primary) 12%, transparent) !important;
+  color: var(--text-primary) !important;
+}
+
+/* ============================================================================
+ * 原生移动端（iOS / Android Capacitor 壳）适配
+ *
+ * 全部靠 :root[data-runtime] / :root[data-native-safe-area] 兜住，
+ * Web 与 Electron 完全不受影响。
+ *
+ * 三件事：
+ *   1. 把安全区数值暴露成 CSS 变量，布局层按需消费
+ *   2. 处理 iOS 的 100vh 陷阱与键盘顶起
+ *   3. 原生滚动体验（惯性、去回弹、隐藏滚动条）
+ *
+ * data-runtime / data-native-safe-area 由 useCapacitorSystemBars 写入。
+ * ========================================================================== */
+
+:root {
+  --safe-top: 0px;
+  --safe-right: 0px;
+  --safe-bottom: 0px;
+  --safe-left: 0px;
+  --keyboard-height: 0px;
+}
+
+/* --- 1. 安全区数值 ------------------------------------------------ */
+
+:root[data-native-safe-area='true'] {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
+/* --- 2. iOS 的 100vh 陷阱 -----------------------------------------
+ * WKWebView 里 100vh 会把状态栏 / 手势区域算进去，比可视区高。
+ * 用 dvh 更准；不支持 dvh 的旧内核回落到 -webkit-fill-available。
+ * ------------------------------------------------------------------ */
+
+:root[data-runtime='capacitor-ios'] body,
+:root[data-runtime='capacitor-android'] body {
+  height: 100dvh;
+  min-height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+@supports not (height: 100dvh) {
+  :root[data-runtime='capacitor-ios'] body,
+  :root[data-runtime='capacitor-android'] body {
+    height: -webkit-fill-available;
+    min-height: -webkit-fill-available;
+  }
+}
+
+/* iOS 上禁掉双击缩放与长按选中，桌面端行为保持不变 */
+:root[data-runtime='capacitor-ios'] {
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+}
+
+/* --- 3. 键盘顶起 --------------------------------------------------- */
+
+:root[data-keyboard-open='true'] {
+  --bottom-lift: calc(var(--keyboard-height) + var(--safe-bottom));
+}
+
+:root[data-keyboard-open='true'] .folia-bottom-docked {
+  transform: translateY(calc(-1 * var(--bottom-lift, 0px)));
+}
+
+/* --- 4. 常用工具类，供组件直接挂 ---------------------------------- */
+
+.folia-pt-safe { padding-top: var(--safe-top); }
+.folia-pb-safe { padding-bottom: var(--safe-bottom); }
+.folia-px-safe {
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
+}
+
+/* 全屏歌词页：内容避开灵动岛，背景色仍然铺满 */
+.folia-stage-immersive {
+  padding-top: var(--safe-top);
+  padding-bottom: max(var(--safe-bottom), 12px);
+}
+
+/* 顶部标题栏：iOS 上需要主动下移，否则被状态栏 / 灵动岛遮住 */
+.folia-top-bar {
+  padding-top: calc(var(--safe-top) + 8px);
+}
+
+/* 底部播放控制条 */
+.folia-bottom-bar {
+  padding-bottom: calc(var(--safe-bottom) + 6px);
+}
+
+/* --- 5. 原生滚动体验 ---------------------------------------------- */
+
+:root[data-runtime='capacitor-ios'] .folia-scroll-area {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* 移动端隐藏滚动条视觉 */
+:root[data-runtime='capacitor-ios'] ::-webkit-scrollbar,
+:root[data-runtime='capacitor-android'] ::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}

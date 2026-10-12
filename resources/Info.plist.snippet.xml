@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+  folia-ios / Info.plist 需要追加的键
+  ============================================================================
+
+  ⚠️ 不要手工编辑这个文件到工程里。
+
+  实际执行请用脚本（幂等，可反复跑）：
+
+      bash scripts/apply-ios-plist.sh
+
+  CI 里也已经串好这一步（见 .github/workflows/build-ios-ipa.yml）。
+  本文件是给「想搞清每个键为什么存在」时看的说明。
+
+  ⚠️ 不要整体覆盖 ios/App/App/Info.plist —— Capacitor 生成的模板里已有
+     CFBundle* / UIApplicationSceneManifest / UILaunchStoryboardName 等必需键，
+     覆盖会导致 App 启动崩溃。
+
+  改完建议校验：plutil -lint ios/App/App/Info.plist
+  ============================================================================
+-->
+<dict>
+
+  <!-- ==========================================================================
+       1. UIBackgroundModes —— iOS 版最关键的键
+       ==========================================================================
+       缺了它，App 一退到后台，WKWebView 会立刻暂停 HTMLAudioElement。
+
+       注意这是「前提」而不是「全部」：还需要原生代码把 AVAudioSession
+       设成 .playback 类别（见 FoliaAudioSessionPlugin.swift 的
+       configureAudioSession）。两者缺一不可 ——
+         · 只有 plist 键、没设 category → 后台仍会静音
+         · 只有 category、没 plist 键 → 系统直接停掉会话
+
+       ⚠️ 上架审核会确认这个声明真的用于音频播放。Folia 是音乐播放器，
+          属于正当用途，但前提是后台播放确实可用。 -->
+  <key>UIBackgroundModes</key>
+  <array>
+    <string>audio</string>
+  </array>
+
+  <!-- ==========================================================================
+       2. UIViewControllerBasedStatusBarAppearance
+       ==========================================================================
+       Capacitor 的模板里默认就是 true，脚本只做保证、不会覆盖。
+
+       这一条是 useCapacitorSystemBars.ts 能在 iOS 上生效的前提：
+       设为 false 时状态栏样式由 plist 固定，@capacitor/status-bar 的
+       setStyle() 调用不会生效，全屏歌词页面就没法跟着主题切换状态栏颜色。 -->
+  <key>UIViewControllerBasedStatusBarAppearance</key>
+  <true/>
+
+  <!-- ==========================================================================
+       3. NSLocalNetworkUsageDescription + NSBonjourServices
+       ==========================================================================
+       访问同一局域网内的 Navidrome / 自托管后端时需要。
+
+       iOS 14+ 起，访问局域网设备会弹权限框。缺少这条描述会被系统直接拒绝，
+       而且弹窗里会显示一句很尴尬的空文案。 -->
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Folia 需要访问本地网络，以连接你自建的 Navidrome 音乐服务与音源后端。</string>
+
+  <!-- 如果通过 mDNS / .local 域名发现服务，必须声明 Bonjour 服务类型。
+       纯 IP 直连不需要。apply-ios-plist.sh 默认不加这条，
+       因为它会让审核注意到你在做局域网服务发现 —— 用不到就别加。 -->
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_http._tcp</string>
+    <string>_https._tcp</string>
+  </array>
+
+  <!-- ==========================================================================
+       4. 相册权限
+       ==========================================================================
+       写入权限用于导出歌词卡片分享图；读取权限用于选择自定义封面。
+       只用一个的话删掉另一个 —— 申请用不到的权限会被审核追问。 -->
+  <key>NSPhotoLibraryAddUsageDescription</key>
+  <string>Folia 需要保存图片到相册，以便导出歌词卡片分享图。</string>
+  <key>NSPhotoLibraryUsageDescription</key>
+  <string>Folia 需要读取相册，以便你选择图片作为自定义封面。</string>
+
+  <!-- ==========================================================================
+       5. NSAppTransportSecurity
+       ==========================================================================
+       只开 localhost 例外，**不开** NSAllowsArbitraryLoads。
+
+       全局放开明文 HTTP 是上架审核的高频拒绝原因。部署到 Vercel /
+       Cloudflare 后是 HTTPS，这个例外其实用不到，但留着便于本地调试。
+
+       如果你把后端跑在 NAS 的局域网 IP 上（如 192.168.1.10），
+       需要为那个 IP 单独加一条例外。 -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key>
+    <false/>
+    <key>NSExceptionDomains</key>
+    <dict>
+      <key>localhost</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key>
+        <true/>
+        <key>NSIncludesSubdomains</key>
+        <true/>
+      </dict>
+    </dict>
+  </dict>
+
+  <!-- ==========================================================================
+       6. NSMicrophoneUsageDescription —— 可选
+       ==========================================================================
+       只有启用了语音搜索才需要。apply-ios-plist.sh 默认**不加**这一条，
+       因为申请用不到的权限会被审核追问「为什么不用还要申请」。
+       确实需要语音输入时，手动加上：
+
+       <key>NSMicrophoneUsageDescription</key>
+       <string>Folia 需要使用麦克风，以便你通过语音搜索歌曲。</string>
+       ========================================================================== -->
+
+</dict>
+
+<!--
+  ============================================================================
+  以下三个键是刻意【不设置】的，说明原因
+  ============================================================================
+
+  ✗ UIUserInterfaceStyle = Dark
+      folia 有浅色 / 深色两套主题（代码里的 isDaylight 状态）。
+    设成 Dark 会强制全局深色，浅色主题直接失效。
+    必须留给代码控制，不要在 plist 里固定。
+
+  ✗ UIApplicationExitsOnSuspend
+      这个键在 iOS 13 已被移除。现代 iOS 上无论设 true 还是 false 都不起作用，
+      而且保留它可能让审核质疑你在用已废弃的行为。直接不要。
+
+  ✗ IgnoreSilentSwitch
+      这**不是** iOS 的 Info.plist 键，是某些 Cordova 媒体插件的配置项。
+      本项目用 AVAudioSession 的 .playback 类别，该类别本身就不受静音开关影响
+      （这正是音乐播放器想要的行为），不需要额外的键。
+
+  ============================================================================
+-->
