@@ -65,11 +65,16 @@ const formatOpacity = (value: number): string => formatNumber(Math.max(0, Math.m
 /**
  * 缩放量化步长。
  *
- * 把缩放值吸附到 0.02 的整数倍上，卡片 transform 字符串就只在「跨档」时才变化。
- * 配合下面「位移里不含 dx/dy」的改动，拖拽时每帧真正需要写 style 的卡片
- * 从「全部」降到「少量跨档的」，这是本轮流畅度优化的主要来源。
+ * 把缩放值吸附到 0.01 的整数倍上，卡片 transform 字符串就只在「跨档」时才变化。
+ * 关键在于：放大区很小（只有 maxDistance 半径内的卡片 scale > 1，
+ * 116px 瓷砖 + 192px 半径时大约只有 8 张），**其余上百张卡片的 scale 恒等于 1**，
+ * transform 字符串一辈子不变 —— 拖拽期间它们的 style 一次都不会被写。
+ * 这是本轮流畅度优化的主要来源。
+ *
+ * 步长取 0.01 是因为受影响的面很窄：0.01 × 116px ≈ 1.2px，
+ * 即使快速拖拽也看不出「跳档」。
  */
-const SCALE_QUANT_STEP = 0.02;
+const SCALE_QUANT_STEP = 0.01;
 
 /** 封面墙：屏幕正中央那张卡片的放大倍数。 */
 const WALL_CENTER_SCALE = 1.42;
