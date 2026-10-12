@@ -74,6 +74,7 @@ build/spm/
 build/App.xcarchive/
 build/ipa/
 build/ExportOptions.plist
+build/xcodebuild.log
 
 # generate-ios-assets.mjs 的临时暂存目录（正常会被 finally 清掉，留个保险）
 .asset-staging/

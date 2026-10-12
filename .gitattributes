@@ -1,0 +1,92 @@
+# ============================================================================
+# 换行符统一为 LF
+#
+# 为什么必须有这个文件：
+#   这个仓库在 Windows 上开发，但要在 macOS 上构建（GitHub Actions）。
+#   Git for Windows 默认 core.autocrlf=true，一旦某个文本文件以 CRLF 进仓库，
+#   在 macOS 上跑就会出问题 —— 尤其是 shell 脚本：
+#
+#     - `\` 行续行符后面跟着 CR 时，bash 不把它当续行，
+#       于是 xcodebuild 会收到 `\r-project` 这类畸形参数，
+#       直接返回退出码 64（sysexits.h 的 EX_USAGE），报错信息还看不出来源
+#     - `set -euo pipefail\r` 里的 pipefail 变成非法选项名
+#     - `VAR="x"\r` 会让变量值尾部带上 CR，路径判断全部失效
+#
+#   所以这里显式声明：文本文件一律 LF。
+# ============================================================================
+
+# 默认：Git 自己判断是不是文本，是文本就用 LF
+* text=auto eol=lf
+
+# --- 必须 LF 的（构建链直接执行 / 被工具解析）---
+*.sh          text eol=lf
+*.bash        text eol=lf
+*.mjs         text eol=lf
+*.cjs         text eol=lf
+*.js          text eol=lf
+*.ts          text eol=lf
+*.tsx         text eol=lf
+*.jsx         text eol=lf
+*.json        text eol=lf
+*.jsonc       text eol=lf
+*.yml         text eol=lf
+*.yaml        text eol=lf
+*.toml        text eol=lf
+*.md          text eol=lf
+*.css         text eol=lf
+*.scss        text eol=lf
+*.html        text eol=lf
+*.xml         text eol=lf
+*.svg         text eol=lf
+
+# --- iOS / Android 原生工程 ---
+*.swift       text eol=lf
+*.m           text eol=lf
+*.h           text eol=lf
+*.plist       text eol=lf
+*.pbxproj     text eol=lf
+*.xcconfig    text eol=lf
+*.storyboard  text eol=lf
+*.xcscheme    text eol=lf
+*.podspec     text eol=lf
+*.gradle      text eol=lf
+*.pro         text eol=lf
+
+# --- Windows 专用的必须保持 CRLF ---
+*.bat         text eol=crlf
+*.cmd         text eol=crlf
+
+# --- 二进制，Git 不要碰 ---
+*.png         binary
+*.jpg         binary
+*.jpeg        binary
+*.gif         binary
+*.ico         binary
+*.webp        binary
+*.bmp         binary
+*.woff        binary
+*.woff2       binary
+*.ttf         binary
+*.otf         binary
+*.eot         binary
+*.mp3         binary
+*.wav         binary
+*.flac        binary
+*.mp4         binary
+*.webm        binary
+*.pdf         binary
+*.zip         binary
+*.gz          binary
+*.br          binary
+*.tar         binary
+*.ipa         binary
+*.apk         binary
+*.aab         binary
+*.jar         binary
+*.aar         binary
+*.so          binary
+*.dylib       binary
+*.dll         binary
+*.exe         binary
+*.node        binary
+*.wasm        binary

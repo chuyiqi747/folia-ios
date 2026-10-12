@@ -188,10 +188,10 @@ if (!existsSync(plist)) {
 console.log('');
 if (failed === 0) {
   console.log('\x1b[32m\x1b[1m全部通过。\x1b[0m 下一步：npx cap open ios，用真机跑（模拟器验不了锁屏）。');
-  console.log('\x1b[90m真机验证顺序见 patches/App.tsx-接入点.md 第 6 节。\x1b[0m');
+  console.log('\x1b[90m真机验证顺序见 docs/iOS构建与安装指南.md 第四节。\x1b[0m');
   process.exit(0);
 } else {
   console.log(`\x1b[31m\x1b[1m${failed} 项未通过。\x1b[0m`);
-  console.log('\x1b[90m完整排查表见 native-audio/ios-plugin/README.md 第六节。\x1b[0m');
+  console.log('\x1b[90m完整排查表见 native/ios-plugin/README.md 第六节。\x1b[0m');
   process.exit(1);
 }

@@ -10,7 +10,7 @@
 #      这样整条链路不需要你有 Mac，也不需要付费开发者账号。
 #   3. 公开仓库的 macOS 构建时长免费且无限量。
 #
-# 前置条件：见 docs/Windows出包指南.md
+# 前置条件与完整步骤：见 docs/iOS构建与安装指南.md
 # ============================================================================
 
 name: Build unsigned IPA
@@ -204,5 +204,5 @@ jobs:
             echo "2. 用 **Sideloadly** 打开这个 IPA，填入 Apple ID，点 Start"
             echo "3. 设备上：设置 → 通用 → VPN与设备管理 → 信任该描述文件"
             echo ""
-            echo "详细排查见 \`docs/Windows出包指南.md\`。"
+            echo "详细排查见 \`docs/iOS构建与安装指南.md\`。"
           } >> "$GITHUB_STEP_SUMMARY"
