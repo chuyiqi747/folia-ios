@@ -174,6 +174,24 @@ jobs:
           # 只有在 TrollStore 报 "Unsigned App" 时才需要。
           FOLIA_ADHOC_SIGN: ${{ inputs.adhoc_sign && '1' || '0' }}
 
+      # ----------------------------------------------------------------------
+      # 失败时把 xcodebuild 日志单独存一份。
+      #
+      # 为什么需要：annotation 有长度上限（超了会被整条丢弃），而完整日志要
+      # 登录才能下载（匿名请求 /actions/runs/{id}/logs 返回 403
+      # "Must have admin rights to Repository"）。
+      # 把日志作为 artifact 上传后就能用 API 取回 —— artifact 下载走
+      # api.github.com / pipelines.actions.githubusercontent.com，不受限制。
+      # ----------------------------------------------------------------------
+      - name: 上传构建日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: build/xcodebuild.log
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: 上传 IPA
         uses: actions/upload-artifact@v4
         with:

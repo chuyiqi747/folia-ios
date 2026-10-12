@@ -15,13 +15,26 @@
 #
 # 环境变量：
 #   FOLIA_ADHOC_SIGN=1   打包前做 ad-hoc 签名（TrollStore 报 Unsigned App 时用）
-#   FOLIA_BUILD_LOG=...  构建日志路径（默认 build/xcodebuild.log）
-# ============================================================================
+#   FOLIA_BUILD_LOG=...  构建日志路径（默认 <仓库根>/build/xcodebuild.log）
+#
+# ---------------------------------------------------------------------------
+# 【重要设计约定】所有路径都用绝对路径，脚本全程不 cd。
+#
+# 曾经的 bug：脚本先 `cd ios/App`，再用相对路径 `build/xcodebuild.log` 去 tee，
+# 结果写到了不存在的 `ios/App/build/`，tee 直接失败、日志没落盘，
+# 于是失败分支里 `[ -f "$BUILD_LOG" ]` 为假，连错误注解都发不出去——
+# 表现为「构建失败但看不到任何原因」。
+# 改成绝对路径后这类问题从根上消失。
+# ----------------------------------------------------------------------------
 
 set -euo pipefail
 
-PROJECT_DIR="ios/App"
-OUT_DIR="build"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+PROJECT_DIR="$ROOT_DIR/ios/App"
+XCODEPROJ="$PROJECT_DIR/App.xcodeproj"
+OUT_DIR="$ROOT_DIR/build"
 APP_NAME="App"
 IPA_NAME="Folia-unsigned.ipa"
 BUILD_LOG="${FOLIA_BUILD_LOG:-$OUT_DIR/xcodebuild.log}"
@@ -32,8 +45,8 @@ if ! command -v xcodebuild >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ ! -f "$PROJECT_DIR/App.xcodeproj/project.pbxproj" ]; then
-  echo "✗ 找不到 $PROJECT_DIR/App.xcodeproj" >&2
+if [ ! -f "$XCODEPROJ/project.pbxproj" ]; then
+  echo "✗ 找不到 $XCODEPROJ" >&2
   echo "  先执行：npx cap add ios && npx cap sync ios" >&2
   exit 1
 fi
@@ -78,7 +91,7 @@ emit_annotation() {
 # 光看退出码区分不出来。把 -showsdks 的结果摊开就能一眼确认。
 print_diagnostics() {
   local list_out showsdks_out
-  list_out=$(xcodebuild -list -project App.xcodeproj 2>&1 || true)
+  list_out=$(xcodebuild -list -project "$XCODEPROJ" 2>&1 || true)
   showsdks_out=$(xcodebuild -showsdks 2>&1 || true)
   echo "==> 工程诊断"
   echo "$list_out" | sed 's/^/    /'
@@ -103,8 +116,6 @@ if [ -e "$PROJECT_DIR/App.xcworkspace" ]; then
 fi
 
 echo "==> 编译（关闭签名）"
-cd "$PROJECT_DIR"
-
 print_diagnostics
 
 # ---------------------------------------------------------------------------
@@ -119,47 +130,44 @@ SIGN_FLAGS=(
   CODE_SIGNING_ENTITLEMENTS=""
 )
 
-# ---------------------------------------------------------------------------
-# 两种构建方式，按顺序尝试。
-#
-#   方式 1：-target App
-#     Capacitor 的 iOS 模板不含共享 scheme（xcshareddata/xcschemes/ 为空），
-#     而 scheme 是 Xcode 打开工程时才自动生成的。所以 -scheme 在纯 CI 上
-#     可能报 "scheme not found" —— 这就是当初选 -target 的理由。
-#
-#   方式 2：-scheme App
-#     兜底。上面那句 `xcodebuild -list` 通常会把 scheme 生成到
-#     xcuserdata 里，之后 -scheme 就能用了。
-#     如果 -target 因为别的原因（Xcode 版本差异）失败，这里能接住。
-#
-# 两种都失败才真正退出，并把错误行转成 annotation 暴露出去。
-# ---------------------------------------------------------------------------
 BUILD_OK=0
 SUCCESS_MODE=""
 FAILED_MODES=""
 
+# ---------------------------------------------------------------------------
+# try_build <标签> <xcodebuild 参数...>
+#
+# 失败时：把错误行与输出尾部**同时**打印到 stdout（GitHub 日志里可见）
+# 并累积到 FAILED_MODES。日志始终写到绝对路径 $BUILD_LOG，保证落盘。
+# ---------------------------------------------------------------------------
 try_build() {
   local label="$1"; shift
   echo ""
   echo "==> 尝试构建方式：$label"
   echo "    xcodebuild $*"
+
   set +e
-  # 同时写文件和终端：终端给人看，文件给 annotation 用
   xcodebuild "$@" 2>&1 | tee "$BUILD_LOG"
   local status=${PIPESTATUS[0]}
   set -e
+
   if [ "$status" -eq 0 ]; then
     echo "==> 方式「$label」构建成功"
     SUCCESS_MODE="$label"
     return 0
   fi
+
   echo "==> 方式「$label」失败（xcodebuild 退出码 $status）"
+  echo "---- 该方式输出尾部 25 行 ----"
+  tail -25 "$BUILD_LOG" 2>/dev/null | sed 's/^/    /' || true
+  echo "---- 尾部结束 ----"
+
   FAILED_MODES="${FAILED_MODES}${FAILED_MODES:+, }$label (exit $status)"
   return 1
 }
 
 BASE_FLAGS=(
-  -project App.xcodeproj
+  -project "$XCODEPROJ"
   -configuration Release
   -sdk iphoneos
   "${SIGN_FLAGS[@]}"
@@ -183,14 +191,14 @@ BASE_FLAGS=(
 #     产物改从 ~/Library/Developer/Xcode/DerivedData 下找。
 if try_build "-target App + 指定 DerivedData" \
   "${BASE_FLAGS[@]}" -target "$APP_NAME" \
-  -derivedDataPath "../../$OUT_DIR" \
-  -clonedSourcePackagesDirPath "../../$OUT_DIR/spm" \
+  -derivedDataPath "$OUT_DIR" \
+  -clonedSourcePackagesDirPath "$OUT_DIR/spm" \
   build; then
   BUILD_OK=1
 elif try_build "-scheme App + 指定 DerivedData" \
   "${BASE_FLAGS[@]}" -scheme "$APP_NAME" \
-  -derivedDataPath "../../$OUT_DIR" \
-  -clonedSourcePackagesDirPath "../../$OUT_DIR/spm" \
+  -derivedDataPath "$OUT_DIR" \
+  -clonedSourcePackagesDirPath "$OUT_DIR/spm" \
   build; then
   BUILD_OK=1
 elif try_build "-scheme App + 默认 DerivedData" \
@@ -198,8 +206,6 @@ elif try_build "-scheme App + 默认 DerivedData" \
   build; then
   BUILD_OK=1
 fi
-
-cd - >/dev/null
 
 if [ "$BUILD_OK" -ne 1 ]; then
   echo "" >&2
@@ -209,12 +215,20 @@ if [ "$BUILD_OK" -ne 1 ]; then
 
   # 把错误行转成 annotation —— 这是匿名唯一能读到的方式
   if [ -f "$BUILD_LOG" ]; then
-    ERR_LINES=$(grep -iE "error:|error |fatal error|cannot|not found|unable to|does not contain|no such|missing|denied|invalid option|unknown option|requires" "$BUILD_LOG" 2>/dev/null | head -25 || true)
+    ERR_LINES=$(grep -iE "error:|fatal error|cannot find|not found|unable to|does not contain|no such|missing|denied|invalid option|unknown option|requires |Command .* failed|The following build commands failed" "$BUILD_LOG" 2>/dev/null | head -30 || true)
+    if [ -z "$ERR_LINES" ]; then
+      ERR_LINES=$(tail -30 "$BUILD_LOG" 2>/dev/null || true)
+    fi
     emit_annotation error "xcodebuild 错误行" "尝试过的方式：$FAILED_MODES
+
 $ERR_LINES"
 
-    TAIL_LINES=$(tail -40 "$BUILD_LOG" 2>/dev/null || true)
-    emit_annotation error "xcodebuild 输出尾部 40 行" "$TAIL_LINES"
+    TAIL_LINES=$(tail -45 "$BUILD_LOG" 2>/dev/null || true)
+    emit_annotation error "xcodebuild 输出尾部" "$TAIL_LINES"
+  else
+    emit_annotation error "xcodebuild 未产生日志" "尝试过的方式：$FAILED_MODES
+预期日志路径：$BUILD_LOG
+（tee 未能写入 —— 通常是路径问题）"
   fi
 
   echo "  （错误行已作为 annotation 输出，可在 Actions 页面顶部或通过 Checks API 查看）" >&2
@@ -306,10 +320,10 @@ if [ "${FOLIA_ADHOC_SIGN:-0}" = "1" ]; then
   fi
 fi
 
-cd "$OUT_DIR"
-rm -f "$IPA_NAME"
-zip -qry "$IPA_NAME" Payload
-cd - >/dev/null
+rm -f "$OUT_DIR/$IPA_NAME"
+# zip 必须在 Payload 的父目录执行，才能把 Payload/ 作为顶层条目写进去。
+# 用子 shell 切目录，避免污染主流程的 cwd。
+( cd "$OUT_DIR" && zip -qry "$IPA_NAME" Payload )
 
 IPA_SIZE=$(du -h "$OUT_DIR/$IPA_NAME" | cut -f1)
 echo "==> 打包完成：$OUT_DIR/$IPA_NAME（$IPA_SIZE）"

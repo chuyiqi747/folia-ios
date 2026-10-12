@@ -1,6 +1,12 @@
 import Foundation
 import AVFoundation
 import MediaPlayer
+// ⚠️ 必须显式 import UIKit。
+// 下面用到了 UIImage / UIColor / UIGraphicsImageRenderer（makePlaceholderArtwork
+// 与 downloadArtwork 两处）。虽然 MediaPlayer 在多数 SDK 版本上会间接把 UIKit
+// 带进来，但这属于「碰巧能过」—— 换 SDK 版本就可能报
+// "cannot find type 'UIImage' in scope"，所以显式写上。
+import UIKit
 import Capacitor
 
 // ============================================================================
