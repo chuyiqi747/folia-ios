@@ -129,8 +129,8 @@ const getStoredLocalTrackSortDirection = (): LocalSongFolderSortDirection => {
     const stored = localStorage.getItem(LOCAL_TRACK_SORT_DIRECTION_STORAGE_KEY);
     return stored === 'desc' ? stored : 'asc';
 };
-const GRID_VIEW_RENDER_BUFFER_FACTOR = 0.75;
-const GRID_VIEW_CARD_VISIBILITY_BUFFER = 96;
+const GRID_VIEW_RENDER_BUFFER_FACTOR = 0.35;
+const GRID_VIEW_CARD_VISIBILITY_BUFFER = 72;
 const GRID_SEARCH_DEBOUNCE_MS = 80;
 const TRACK_REMOVAL_ANIMATION_MS = 460;
 const TRACK_REMOVAL_BEZIER = [0.22, 0.8, 0.24, 1] as const;
@@ -199,41 +199,32 @@ export const PolaroidCard = React.memo<{
             )
         );
 
-        const textLength = useMemo(() => {
-            let len = 0;
-            if (typeof item.name === 'string') {
-                len += item.name.length;
-            }
-            if (item.subtitle) {
-                len += item.subtitle.length;
-            }
-            if (item.description) {
-                len += item.description.length;
-            }
-            if (mode === 'tracks' && item.rawTrack) {
-                const albumName = item.rawTrack.album?.name || '';
-                len += albumName.length;
-            }
-            return len;
-        }, [item.name, item.subtitle, item.description, item.rawTrack, mode]);
-
-        const scaleFactor = useMemo(() => {
-            if (textLength > 100) return 1.18;
-            if (textLength > 65) return 1.12;
-            if (textLength > 35) return 1.06;
-            return 1.0;
-        }, [textLength]);
-
-        const dynamicWidth = cardWidth * scaleFactor;
-        const dynamicHeight = cardHeight * scaleFactor;
-
+        // 密集封面墙：卡片就是一块铺满封面的正方形瓷砖。
+        // 没有拍立得白边、没有下方信息条、没有圆角/边框/阴影 ——
+        // 标题与歌手以白字直接压在封面底部的渐变遮罩上（与参考截图一致）。
+        //
+        // 例外：本组件也被歌手页（ArtistGridView）复用，那边传的是竖长卡片
+        // （220×330）。正方形专辑封面如果被 object-cover 塞进 2:3 的框里，
+        // 左右两侧会被裁掉，封面上印的专辑名就没了。所以竖长卡片走
+        // 「封面保持正方形占上半部分」的分支，多出来的地方留深色底、
+        // 标题仍然压在整块底部。
+        const coverFillsCard = cardHeight <= cardWidth * 1.25;
         return (
             <div
-                className="rounded-xl p-3 flex flex-col items-center border transition-shadow duration-300 shadow-lg hover:shadow-2xl theme-polaroid-card"
+                className="relative overflow-hidden theme-polaroid-card"
                 style={{
-                    width: dynamicWidth,
-                    minHeight: dynamicHeight,
-                    height: 'auto',
+                    width: cardWidth,
+                    height: cardHeight,
+                    // ⚠️ 必须显式关掉过渡。
+                    // .theme-polaroid-card 带 `transition: all 0.3s ease`，
+                    // 而拖拽时卡片 transform 每帧都在变 —— 浏览器会给 transform
+                    // 也加 0.3s 过渡，于是每一帧都在追一个过期的目标值，直接卡成幻灯片。
+                    // 密集封面墙下同屏卡片数翻了几倍，这个问题会被放大，所以这里写死 none。
+                    transition: 'none',
+                    // 只有聚焦卡片带阴影 —— 参考截图里浮起来的就是中心那一张。
+                    // 不能给每张都加：同屏 200 张卡片各带一个 blur 阴影，
+                    // 栅格化开销会直接爆炸。
+                    boxShadow: isFocused ? '0 12px 32px rgba(0, 0, 0, 0.55)' : undefined,
                 }}
                 onClick={(e) => {
                     if (isEditMode) {
@@ -247,8 +238,11 @@ export const PolaroidCard = React.memo<{
                     onCenter();
                 }}
             >
-                {/* Square Polaroid Photo Area */}
-                <div className="w-full aspect-square rounded-lg overflow-hidden bg-zinc-200/60 dark:bg-zinc-800/60 relative shadow-inner flex items-center justify-center shrink-0">
+                {/* 封面：正方形瓷砖里铺满整块；竖长卡片里保持正方形只占上半部分 */}
+                <div
+                    className="absolute left-0 right-0 top-0 overflow-hidden bg-zinc-200/60 dark:bg-zinc-800/60"
+                    style={{ height: coverFillsCard ? '100%' : cardWidth }}
+                >
                     {item.coverUrl ? (
                         <>
                             <img
@@ -280,179 +274,161 @@ export const PolaroidCard = React.memo<{
                                 className="w-full h-full object-cover transition-opacity duration-350 pointer-events-none select-none opacity-0"
                             />
                             <div className="absolute inset-0 bg-zinc-300/40 dark:bg-zinc-700/40 transition-opacity duration-350 flex items-center justify-center">
-                                <Disc size={48} className="opacity-20 animate-spin" style={{ animationDuration: '3s', color: 'var(--text-primary)' }} />
+                                <Disc size={32} className="opacity-20 animate-spin" style={{ animationDuration: '3s', color: 'var(--text-primary)' }} />
                             </div>
                         </>
                     ) : (
                         <div className="absolute inset-0 bg-zinc-300/40 dark:bg-zinc-700/40 flex items-center justify-center">
-                            <Disc size={48} className="opacity-20" style={{ color: 'var(--text-primary)' }} />
+                            <Disc size={32} className="opacity-20" style={{ color: 'var(--text-primary)' }} />
                         </div>
                     )}
-
-                    {/* Unavailable Mask/Badge */}
-                    {isUnavailable && (
-                        <div className="absolute inset-0 bg-black/40 flex items-center justify-center p-2 text-center z-10">
-                            <span className="text-[10px] bg-red-500/80 text-white font-bold px-2 py-1 rounded-full uppercase tracking-wider">
-                                {unavailableTagText || t('status.songUnavailableTag').toUpperCase()}
-                            </span>
-                        </div>
-                    )}
-
-                    {/* Delete button overlay for Edit Mode */}
-                    <AnimatePresence>
-                        {isEditMode && onRemoveTrack && !isUnavailable && (
-                            <motion.button
-                                key="delete-btn"
-                                initial={{ scale: 0, opacity: 0 }}
-                                animate={{ scale: 1, opacity: 1 }}
-                                exit={{ scale: 0, opacity: 0 }}
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    onRemoveTrack();
-                                }}
-                                className="absolute top-2 right-2 w-7 h-7 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center shadow-lg border border-white/20 z-[60] active:scale-90 transition-transform cursor-pointer"
-                            >
-                                <X size={14} className="stroke-[3]" />
-                            </motion.button>
-                        )}
-                    </AnimatePresence>
                 </div>
 
-                {/* Bottom Polaroid Frame Label Details */}
-                <div className="w-full flex-1 flex flex-col justify-between pt-3 text-left min-w-0">
-                    <div className="space-y-1 mb-2">
-                        {/* Title */}
-                        <div className="group/song-title relative max-w-full">
-                            <div className="text-s font-bold tracking-tight opacity-90 max-w-full line-clamp-4 whitespace-normal break-words">
-                                {item.name}
-                            </div>
-                            {isFocused && onEditLocalMetadata && (
-                                <button
-                                    type="button"
-                                    onClick={(event) => {
-                                        event.stopPropagation();
-                                        onEditLocalMetadata();
-                                    }}
-                                    className="absolute -right-1 top-0 rounded-md bg-[var(--bg-color)]/85 p-1 opacity-0 shadow-sm backdrop-blur-sm transition-opacity hover:bg-current/10 group-hover/song-title:opacity-65 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current/30"
-                                    title={t('localMusic.manualMetadataMatch')}
-                                    aria-label={t('localMusic.manualMetadataMatch')}
-                                >
-                                    <Pencil size={13} />
-                                </button>
-                            )}
-                        </div>
-                        {/* Clickable Artists */}
-                        {item.description && (
-                            <div className="text-[10px] opacity-55 max-w-full font-medium line-clamp-3 whitespace-normal break-words">
-                                {mode === 'tracks' && onSelectArtist && item.rawTrack?.artists ? (
-                                    <span className="flex gap-1 flex-wrap">
-                                        {item.rawTrack.artists.map((artist, idx, artists) => {
-                                            const artistTargetId = resolveGridTrackArtistTargetId(item.rawTrack, artist);
-                                            const canOpenArtist = Boolean(
-                                                artistTargetId !== undefined
-                                                && artistTargetId !== ''
-                                                && (
-                                                    item.rawTrack?.sourceRef?.kind !== 'online'
-                                                    || canResolveSongCatalogRef(item.rawTrack as UnifiedSong, 'artist', artist)
-                                                )
-                                            );
-                                            return (
-                                            <span
-                                                key={`${artist.id ?? 'artist'}-${idx}-${artist.name}`}
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    if (canOpenArtist && artistTargetId !== undefined) {
-                                                        onBeforeNestedNavigate?.();
-                                                        onSelectArtist(artistTargetId, artist, item.rawTrack);
-                                                    }
-                                                }}
-                                                className={canOpenArtist
-                                                    ? 'hover:underline hover:opacity-100 cursor-pointer text-current font-semibold'
-                                                    : 'text-current font-semibold'}
-                                            >
-                                                {artist.name}{idx < artists.length - 1 ? ',' : ''}
-                                            </span>
-                                            );
-                                        })}
-                                    </span>
-                                ) : (
-                                    item.description
-                                )}
-                            </div>
-                        )}
+                {/* 底部渐变遮罩 + 标题 / 歌手（直接压在封面上） */}
+                <div className="absolute inset-x-0 bottom-0 z-10 px-2 pb-1.5 pt-6 bg-gradient-to-t from-black/80 via-black/40 to-transparent pointer-events-none">
+                    <div className="text-[10px] font-semibold text-white/95 truncate leading-tight">
+                        {item.name}
                     </div>
-
-                    <div className="flex items-end justify-between mt-auto pt-1.5 w-full">
-                        {/* Left: Clickable Album name & Duration */}
-                        <div className="flex flex-col min-w-0 flex-1 pr-2">
-                            {mode === 'tracks' && item.rawTrack && (
+                    {(item.description || (mode === 'tracks' && trackAlbum?.name)) && (
+                        <div className="text-[9px] text-white/65 leading-tight mt-0.5 whitespace-nowrap overflow-hidden text-ellipsis">
+                            {mode === 'tracks' && onSelectArtist && item.rawTrack?.artists ? (
+                                <span className="inline">
+                                    {item.rawTrack.artists.map((artist, idx, artists) => {
+                                        const artistTargetId = resolveGridTrackArtistTargetId(item.rawTrack, artist);
+                                        const canOpenArtist = Boolean(
+                                            artistTargetId !== undefined
+                                            && artistTargetId !== ''
+                                            && (
+                                                item.rawTrack?.sourceRef?.kind !== 'online'
+                                                || canResolveSongCatalogRef(item.rawTrack as UnifiedSong, 'artist', artist)
+                                            )
+                                        );
+                                        return (
+                                        <span
+                                            key={`${artist.id ?? 'artist'}-${idx}-${artist.name}`}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                if (canOpenArtist && artistTargetId !== undefined) {
+                                                    onBeforeNestedNavigate?.();
+                                                    onSelectArtist(artistTargetId, artist, item.rawTrack);
+                                                }
+                                            }}
+                                            className={canOpenArtist
+                                                ? 'hover:underline hover:text-white/95 cursor-pointer text-current font-semibold pointer-events-auto'
+                                                : 'text-current font-semibold'}
+                                        >
+                                            {artist.name}{idx < artists.length - 1 ? ', ' : ''}
+                                        </span>
+                                        );
+                                    })}
+                                </span>
+                            ) : (
+                                item.description
+                            )}
+                            {/* 专辑名跟在歌手后面，保持「可点开专辑」这个能力不丢 */}
+                            {mode === 'tracks' && trackAlbum?.name && (
                                 <>
+                                    <span className="opacity-50">{' · '}</span>
                                     <span
                                         onClick={(e) => {
                                             e.stopPropagation();
                                             if (canOpenAlbum && albumTargetId !== undefined && onSelectAlbum) {
                                                 onBeforeNestedNavigate?.();
-                                                onSelectAlbum(
-                                                    albumTargetId,
-                                                    item.rawTrack?.album,
-                                                    item.rawTrack,
-                                                );
+                                                onSelectAlbum(albumTargetId, trackAlbum, item.rawTrack);
                                             }
                                         }}
-                                        className={`text-[9px] opacity-35 font-mono line-clamp-2 whitespace-normal break-words max-w-full ${
-                                            canOpenAlbum ? 'hover:underline hover:opacity-85 cursor-pointer' : ''
-                                        }`}
+                                        className={canOpenAlbum
+                                            ? 'hover:underline hover:text-white/95 cursor-pointer text-current pointer-events-auto'
+                                            : 'text-current'}
                                     >
-                                        {item.rawTrack.album?.name || ''}
-                                    </span>
-                                    <span className="text-[9px] opacity-35 font-mono">
-                                        {(() => {
-                                            const dt = item.rawTrack.durationMs || 0;
-                                            const min = Math.floor(dt / 60000);
-                                            const sec = Math.floor((dt % 60000) / 1000);
-                                            return `${min}:${sec < 10 ? '0' : ''}${sec}`;
-                                        })()}
+                                        {trackAlbum.name}
                                     </span>
                                 </>
                             )}
                         </div>
-
-                        {/* Right: Buttons in bottom right corner */}
-                        <div className="flex items-center gap-1.5 shrink-0">
-                            {mode === 'tracks' && !isEditMode && (
-                                <button
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        onSelect();
-                                    }}
-                                    style={{
-                                        opacity: 'var(--play-opacity, 0)',
-                                        pointerEvents: 'var(--play-pe, none)' as any,
-                                        transform: 'scale(var(--play-scale, 0.8))',
-                                        transition: 'opacity 0.25s cubic-bezier(0.16, 1, 0.3, 1), transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.2s ease, color 0.2s ease',
-                                    }}
-                                    className="w-9 h-9 rounded-full bg-zinc-800/10 dark:bg-zinc-100/10 hover:bg-zinc-900 hover:text-zinc-100 dark:hover:bg-zinc-100 dark:hover:text-zinc-900 text-current flex items-center justify-center shadow-sm pointer-events-auto z-10"
-                                    title={t('playlist.play')}
-                                >
-                                    <Play size={15} fill="currentColor" className="ml-0.5" />
-                                </button>
-                            )}
-                            {mode === 'tracks' && onAddQueue && !isUnavailable && !isEditMode && (
-                                <button
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        onAddQueue();
-                                    }}
-                                    style={{ opacity: 'var(--queue-opacity, 1)' as any, pointerEvents: 'var(--queue-pe, auto)' as any }}
-                                    className="w-9 h-9 rounded-full bg-zinc-800/10 dark:bg-zinc-100/10 hover:bg-zinc-900 hover:text-zinc-100 dark:hover:bg-zinc-100 dark:hover:text-zinc-900 text-current flex items-center justify-center transition-colors shadow-sm pointer-events-auto"
-                                    title={t('navidrome.addToQueue')}
-                                >
-                                    <Plus size={15} />
-                                </button>
-                            )}
-                        </div>
-                    </div>
+                    )}
                 </div>
+
+                {/* 本地元数据手动匹配（聚焦时才出现） */}
+                {isFocused && onEditLocalMetadata && (
+                    <button
+                        type="button"
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onEditLocalMetadata();
+                        }}
+                        className="absolute left-1.5 top-1.5 rounded-md bg-black/55 p-1 text-white/80 backdrop-blur-sm transition-colors hover:bg-black/75 hover:text-white focus-visible:outline-none z-20"
+                        title={t('localMusic.manualMetadataMatch')}
+                        aria-label={t('localMusic.manualMetadataMatch')}
+                    >
+                        <Pencil size={12} />
+                    </button>
+                )}
+
+                {/* Unavailable Mask/Badge */}
+                {isUnavailable && (
+                    <div className="absolute inset-0 bg-black/45 flex items-center justify-center p-2 text-center z-10">
+                        <span className="text-[10px] bg-red-500/80 text-white font-bold px-2 py-1 rounded-full uppercase tracking-wider">
+                            {unavailableTagText || t('status.songUnavailableTag').toUpperCase()}
+                        </span>
+                    </div>
+                )}
+
+                {/* Delete button overlay for Edit Mode */}
+                <AnimatePresence>
+                    {isEditMode && onRemoveTrack && !isUnavailable && (
+                        <motion.button
+                            key="delete-btn"
+                            initial={{ scale: 0, opacity: 0 }}
+                            animate={{ scale: 1, opacity: 1 }}
+                            exit={{ scale: 0, opacity: 0 }}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onRemoveTrack();
+                            }}
+                            className="absolute top-1.5 right-1.5 w-6 h-6 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center shadow-lg border border-white/20 z-[60] active:scale-90 transition-transform cursor-pointer"
+                        >
+                            <X size={12} className="stroke-[3]" />
+                        </motion.button>
+                    )}
+                </AnimatePresence>
+
+                {/* 播放按钮：只在最靠近中心的卡片上浮现（居中，随 --play-opacity 淡入） */}
+                {mode === 'tracks' && !isEditMode && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onSelect();
+                            }}
+                            style={{
+                                opacity: 'var(--play-opacity, 0)',
+                                pointerEvents: 'var(--play-pe, none)' as any,
+                                transform: 'scale(var(--play-scale, 0.8))',
+                                transition: 'opacity 0.25s cubic-bezier(0.16, 1, 0.3, 1), transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.2s ease, color 0.2s ease',
+                            }}
+                            className="w-10 h-10 rounded-full bg-black/45 text-white backdrop-blur-md border border-white/25 hover:bg-white hover:text-black flex items-center justify-center pointer-events-auto"
+                            title={t('playlist.play')}
+                        >
+                            <Play size={16} fill="currentColor" className="ml-0.5" />
+                        </button>
+                    </div>
+                )}
+
+                {/* 加入队列：右上角小按钮（随 --queue-opacity 淡入） */}
+                {mode === 'tracks' && onAddQueue && !isUnavailable && !isEditMode && (
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onAddQueue();
+                        }}
+                        style={{ opacity: 'var(--queue-opacity, 1)' as any, pointerEvents: 'var(--queue-pe, auto)' as any }}
+                        className="absolute top-1.5 right-1.5 w-6 h-6 rounded-full bg-black/50 text-white/85 backdrop-blur-md border border-white/20 hover:bg-white hover:text-black flex items-center justify-center pointer-events-auto z-20"
+                        title={t('navidrome.addToQueue')}
+                    >
+                        <Plus size={11} />
+                    </button>
+                )}
             </div>
         );
     },
@@ -463,6 +439,11 @@ export const PolaroidCard = React.memo<{
             prev.item.coverUrl === next.item.coverUrl &&
             prev.item.subtitle === next.item.subtitle &&
             prev.item.description === next.item.description &&
+            // 封面墙上的歌手 / 专辑是可点跳转的，所以这两个回调的
+            // 有无也必须参与比较，否则会出现「按钮点了没反应」的假死。
+            Boolean(prev.onSelectArtist) === Boolean(next.onSelectArtist) &&
+            Boolean(prev.onSelectAlbum) === Boolean(next.onSelectAlbum) &&
+            prev.item.rawTrack?.album?.name === next.item.rawTrack?.album?.name &&
             prev.isDaylight === next.isDaylight &&
             prev.theme === next.theme &&
             prev.mode === next.mode &&
@@ -591,52 +572,66 @@ export const GridView: React.FC<GridViewProps> = ({
         return () => observer.disconnect();
     }, []);
 
-    // Layout values for different container size breakpoints
+    // 密集封面墙参数
+    //
+    // 参考截图（用户给的「第一张」）是一面**铺满整屏的封面墙**：
+    //   - 正方形瓷砖，封面裁切填满，瓷砖之间只有几个像素的缝；
+    //   - 没有拍立得白边、没有圆角、没有卡片阴影、没有下方信息条；
+    //   - 标题/歌手以白字直接压在封面底部；
+    //   - 只有屏幕正中央那张卡片明显放大并浮起来。
+    //
+    // 所以这里 cardWidth == cardHeight（正方形），spacingX/Y 只比它大 4px。
+    // 以 1180px 宽的 iPad 为例，Desktop 档 spacingX = 120 → 约 9.8 列，
+    // 与参考截图的 9~10 列吻合。
+    //
+    // maxDistance 决定「多大范围算中心」：rawScale 从中心 1.42 衰减到
+    // maxDistance 处的 1.0。收得比较小，所以只有中心一张（外加贴身的邻居）
+    // 会被放大，其余整面墙是均匀的。
     const layoutConfig = useMemo(() => {
         const width = containerSize.width;
         if (width < 768) {
-            // Mobile/Narrow
+            // 手机 / 窄屏
             return {
-                cardWidth: 180,
-                cardHeight: 280,
-                spacingX: 205,
-                spacingY: 270,
-                maxDistance: 420,
-                lodStart: 280,
-                lodEnd: 320,
+                cardWidth: 88,
+                cardHeight: 88,
+                spacingX: 92,
+                spacingY: 92,
+                maxDistance: 150,
+                lodStart: 84,
+                lodEnd: 115,
             };
         } else if (width < 1440) {
-            // Desktop
+            // iPad 横屏 / 桌面
             return {
-                cardWidth: 220,
-                cardHeight: 330,
-                spacingX: 250,
-                spacingY: 320,
-                maxDistance: 500,
-                lodStart: 340,
-                lodEnd: 385,
+                cardWidth: 116,
+                cardHeight: 116,
+                spacingX: 120,
+                spacingY: 120,
+                maxDistance: 192,
+                lodStart: 110,
+                lodEnd: 150,
             };
         } else if (width < 2000) {
-            // Large Desktop
+            // 大屏桌面
             return {
-                cardWidth: 250,
-                cardHeight: 375,
-                spacingX: 285,
-                spacingY: 365,
-                maxDistance: 580,
-                lodStart: 400,
-                lodEnd: 450,
+                cardWidth: 132,
+                cardHeight: 132,
+                spacingX: 136,
+                spacingY: 136,
+                maxDistance: 216,
+                lodStart: 125,
+                lodEnd: 170,
             };
         } else {
-            // Ultra Desktop
+            // 超宽桌面
             return {
-                cardWidth: 280,
-                cardHeight: 420,
-                spacingX: 320,
-                spacingY: 410,
-                maxDistance: 660,
-                lodStart: 450,
-                lodEnd: 510,
+                cardWidth: 152,
+                cardHeight: 152,
+                spacingX: 156,
+                spacingY: 156,
+                maxDistance: 248,
+                lodStart: 140,
+                lodEnd: 195,
             };
         }
     }, [containerSize.width]);
@@ -647,7 +642,10 @@ export const GridView: React.FC<GridViewProps> = ({
         const { cardWidth, cardHeight } = layoutConfig;
         const viewportRadius = Math.sqrt((width / 2) ** 2 + (height / 2) ** 2);
         const cardRadius = Math.sqrt(cardWidth ** 2 + cardHeight ** 2) / 2;
-        return viewportRadius + cardRadius + 200; // 200px buffer to prevent visual pop-in during fast drags
+        // 80px 缓冲足够挡住快速拖拽时的「跳出来」——瓷砖只有 116px，
+        // 而裁剪半径本身已经含了整屏对角线 + 一张卡的半径，余量很足。
+        // 之前是 200px，在密集封面墙下会白挂载一大圈离屏卡片。
+        return viewportRadius + cardRadius + 80;
     }, [containerSize, layoutConfig]);
 
     const renderRadius = useMemo(() => (
@@ -668,6 +666,9 @@ export const GridView: React.FC<GridViewProps> = ({
         cardWidth: layoutConfig.cardWidth,
         cardHeight: layoutConfig.cardHeight,
         visibilityBuffer: GRID_VIEW_CARD_VISIBILITY_BUFFER,
+        // 播放键只在「最靠近中心」的那张卡片上浮现。半径取瓷砖间距的 0.55 倍，
+        // 保证居中的卡片全亮、紧邻的一张只有一点点影子，再远就完全不出现。
+        playRevealRadius: layoutConfig.spacingX * 0.55,
     }), [
         clipRadius,
         containerSize.height,
@@ -677,6 +678,7 @@ export const GridView: React.FC<GridViewProps> = ({
         layoutConfig.lodEnd,
         layoutConfig.lodStart,
         layoutConfig.maxDistance,
+        layoutConfig.spacingX,
     ]);
 
     const navigationStorageKey = useMemo(() => {
@@ -1751,7 +1753,9 @@ export const GridView: React.FC<GridViewProps> = ({
                         transformOrigin: 'center center',
                         contain: 'layout style',
                         backfaceVisibility: 'hidden',
-                        perspective: '1200px',
+                        // 密集平面墙不需要 3D 上下文：perspective 会强制建立独立的
+                        // 3D 渲染层，同屏几百张卡片时开销很可观。transform 本身只有
+                        // translate3d + scale，去掉 perspective 后视觉无差别。
                         display: initialFrame.display || undefined,
                         transform: initialFrame.transform,
                         opacity: initialFrame.opacity,
@@ -1764,23 +1768,29 @@ export const GridView: React.FC<GridViewProps> = ({
                     } as React.CSSProperties}
                 >
                     <motion.div
-                        initial={animateEntrance ? { opacity: 0, scale: 0.98, rotateY: -90 } : false}
+                        initial={animateEntrance ? { opacity: 0, scale: 0.98 } : false}
                         animate={isRemovingTrack
-                            ? { opacity: [1, 1, 0], scale: [1, 0.98, 0.96], rotateY: [0, 180, 180] }
-                            : { opacity: 1, scale: 1, rotateY: 0 }}
-                        exit={{
-                            opacity: 0,
-                            scale: 0.98,
-                            rotateY: 90,
-                            transition: { duration: 0.36, ease: [0.4, 0, 0.2, 1] },
-                        }}
+                            ? { opacity: [1, 1, 0], scale: [1, 0.98, 0.96] }
+                            : { opacity: 1, scale: 1 }}
+                        // ⚠️ 刻意【不设 exit 动画】。
+                        //
+                        // 卡片被移出列表只有两种原因：① 拖到屏幕外被裁剪掉；
+                        // ② 用户删歌。第 ② 种走的是上面的 isRemovingTrack 分支
+                        // （animate + 延时卸载），不依赖 exit。
+                        // 而第 ① 种如果配了 exit，AnimatePresence 会把每一张
+                        // 被裁掉的卡片多留在 DOM 里 0.26s 并跑一遍动画 —— 快速拖拽时
+                        // 每秒有几十张卡片在屏幕外做「淡出」，纯属白烧 CPU。
+                        // 去掉之后卡片立刻卸载，DOM 规模也稳定。
                         transition={isRemovingTrack
                             ? { duration: TRACK_REMOVAL_ANIMATION_MS / 1000, times: [0, 0.72, 1], ease: TRACK_REMOVAL_BEZIER }
-                            : { duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
+                            : { duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
                         style={{
-                            transformStyle: 'preserve-3d',
                             transformOrigin: 'center center',
-                            willChange: 'transform, opacity',
+                            // 不再常驻 will-change。
+                            // 卡片自己的 transform 已经由 translate3d 提升为独立图层；
+                            // 再挂一个常驻 willChange 只会让同屏 180 张卡片
+                            // 一直占着合成层内存。入场/删除动画期间
+                            // framer-motion 会自行加 will-change，不需要我们常驻。
                             pointerEvents: isRemovingTrack ? 'none' : undefined,
                             position: 'relative',
                         }}
@@ -1827,18 +1837,6 @@ export const GridView: React.FC<GridViewProps> = ({
                                 }}
                                 isFocused={idx === focusedIndex}
                             />
-                        </div>
-                        <div
-                            aria-hidden="true"
-                            className="absolute inset-0 rounded-xl border shadow-lg theme-polaroid-card flex items-center justify-center"
-                            style={{
-                                backfaceVisibility: 'hidden',
-                                transform: 'rotateY(180deg)',
-                            }}
-                        >
-                            <div className="w-[58%] aspect-square rounded-full border border-current flex items-center justify-center opacity-30">
-                                <Disc className="w-1/2 h-1/2" />
-                            </div>
                         </div>
                     </motion.div>
                 </div>
