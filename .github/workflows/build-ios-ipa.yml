@@ -17,7 +17,9 @@ name: Build unsigned IPA
 
 on:
   push:
-    branches: [main]
+    # 同时监听 main 和 master —— 只写 main 的话，如果本地分支叫 master
+    # 推上去构建根本不会触发，而那种「什么都没发生」的失败最难排查。
+    branches: [main, master]
   workflow_dispatch: # 允许在 Actions 页面手动触发
     inputs:
       adhoc_sign:

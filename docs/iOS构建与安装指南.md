@@ -35,21 +35,134 @@ $ npm run cap:verify:ios     → 全部通过（13/13）
 
 ### 步骤 1：建仓库并推送
 
-```bash
-cd folia-app
-git add -A
-git commit -m "feat(ios): 加入 iOS 平台支持与原生音频会话插件"
-git remote add origin https://github.com/<你的用户名>/<仓库名>.git
+这一步做两件事：**在 GitHub 上开一个空仓库**，然后把 `folia-app` 这个文件夹里的代码**传上去**。
+
+先理解几个概念，不然命令会看得一头雾水：
+
+| 名词 | 说人话 |
+| --- | --- |
+| Git | 一个「代码存档」工具，装在你电脑上 |
+| 仓库（repository / repo） | 一个被 Git 管理的文件夹。`folia-app` 就是 |
+| commit（提交） | 给当前代码拍一张快照。**这一步我已经帮你做完了**（2 个快照） |
+| GitHub | 一个存代码的网站。**把本地仓库传上去**，云端才能帮你编译 |
+| remote（远程） | 本地仓库记住「我要推到 GitHub 的哪个地址」 |
+| push（推送） | 把本地的快照传到 GitHub |
+| main | 分支名，可以理解成「主线」。**注意必须是 main**，因为 CI 只在 main 上触发 |
+
+所以整件事就是：**建个空仓库 → 告诉本地仓库地址 → 推上去**。
+
+---
+
+#### 1.1 先注册 / 登录 GitHub
+
+打开 https://github.com ，没有账号就注册一个（免费）。记下你的**用户名**。
+
+#### 1.2 建一个空仓库
+
+1. 登录后点右上角 **`+`** → **New repository**
+2. **Repository name** 填一个名字，比如 `folia-ios`
+3. **Description** 随便填，比如 `Folia iOS 版`
+4. 选 **Public** ⚠️ **这一步很重要**
+   - Public = 公开仓库，macOS 云端构建**免费且不限量**
+   - Private = 私有仓库，会消耗每月 2000 分钟的免费额度（一次构建 5–10 分钟，能用但会慢慢耗完）
+5. ⚠️ **下面三个勾全部不要勾**：
+   - ❌ Add a README file
+   - ❌ Add .gitignore
+   - ❌ Choose a license
+   
+   原因：勾了会让 GitHub 自动产生一个提交，你的本地代码推上去时会被拒绝
+   （报 `rejected - non-fast-forward`）。我们要的是一个**完全空的**仓库。
+6. 点 **Create repository**
+
+建好后页面会显示一个地址，形如：
+
+```
+https://github.com/你的用户名/folia-ios.git
+```
+
+**把这个地址复制下来**，下一步要用。
+
+#### 1.3 在本地终端里推送
+
+打开一个终端：按 `Win + R`，输入 `cmd`，回车。
+（或者在文件资源管理器里进到 `folia-app` 文件夹，地址栏输入 `cmd` 回车。）
+
+然后依次执行下面 4 条命令。**把第 2 条里的地址换成你刚才复制的**：
+
+```cmd
+cd /d C:\Users\20748\Desktop\pojie\folia-app
+
+git remote add origin https://github.com/你的用户名/folia-ios.git
+
 git push -u origin main
 ```
 
-⚠️ 推之前确认这几件事：
+> 第 1 条：进到项目文件夹
+> 第 2 条：告诉 Git「我要推到哪个地址」
+> 第 3 条：开始推送
 
-- **仓库设为 Public**。私有仓库的 macOS runner 会消耗你的 Actions 免费额度
-  （每月 2000 分钟，一次 iOS 构建约 5–10 分钟，够用但会慢慢耗）。
-  公开仓库的 macOS 构建**免费且不限量**。
-- `ios/` 目录会被一起推上去（约 30 个文件，不含构建产物）。
-  这样 CI 不用再跑 `cap add ios`，少一层出错可能。
+**执行 `git push` 时会弹出一个浏览器窗口**，让你登录 GitHub 并授权 ——
+这是你电脑上 Git 自带的凭据管理器（Git Credential Manager）在帮忙，
+**不需要你去生成什么 token，点几下浏览器就完成了**。
+
+授权后回到终端，会看到类似这样的输出：
+
+```
+Writing objects: 100% (960/960), 8.2 MiB | 3.4 MiB/s, done.
+To https://github.com/你的用户名/folia-ios.git
+ * [new branch]      main -> main
+branch 'main' set up to track 'origin/main'.
+```
+
+看到 `[new branch] main -> main` 就成功了。刷新 GitHub 页面，代码就在上面了。
+
+#### 1.4 如果报错
+
+| 报错 | 原因 | 怎么办 |
+| --- | --- | --- |
+| `remote origin already exists` | 你已经加过地址了 | 先跑 `git remote set-url origin 新地址`，再 `git push -u origin main` |
+| `rejected - non-fast-forward` | 建仓库时勾了 README | 跑 `git push -u origin main --force`（这个仓库是全新的，强推没有风险） |
+| `src refspec main does not match any` | 分支名不对 | 跑 `git branch` 看当前分支叫什么，把 `main` 换成它 |
+| 卡住不动 / 超时 | 网络问题 | 多试一次；或见下面「网络不稳时的办法」 |
+| 弹窗一闪而过、推送失败 | 授权没完成 | 再跑一次 `git push -u origin main`，这次留意浏览器 |
+
+#### 1.5 网络不稳时的办法
+
+如果 `git push` 反复超时（GitHub 在国内直连不稳定），可以改用
+**GitHub Desktop** 这个图形界面工具，它走的认证通道更稳：
+
+1. 打开 PowerShell，执行：`winget install --id GitHub.GitHubDesktop`
+2. 装好后打开它，用 GitHub 账号登录（浏览器授权）
+3. **File → Add local repository** → 选择 `C:\Users\20748\Desktop\pojie\folia-app`
+4. 点右上角 **Publish repository**
+5. ⚠️ **把「Keep this code private」的勾去掉**（要 Public）
+6. 点 **Publish repository**
+
+#### 1.6 可选：把提交作者改成你自己
+
+现在那两个快照的作者写的是占位的 `folia-ios`。想改成你自己的名字/邮箱的话，
+**在推送之前**执行（把内容换成你自己的）：
+
+```cmd
+git config user.name "你的名字"
+git config user.email "你的邮箱"
+git commit --amend --reset-author --no-edit
+```
+
+如果已经推送了也没关系，作者信息是小事，不影响构建。
+
+---
+
+> 下面这两条是给已经熟悉 Git 的人看的快速版：
+>
+> ```bash
+> cd folia-app
+> git remote add origin https://github.com/<你的用户名>/<仓库名>.git
+> git push -u origin main
+> ```
+>
+> 代码已经提交好了（2 个 commit），分支已经是 `main`，不需要再 `git add` / `git commit`。
+
 
 ### 步骤 2：配置音源后端（**不配就等于装了个空壳**）
 
