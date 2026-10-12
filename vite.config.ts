@@ -197,6 +197,16 @@ export default async function viteConfig(_config: ConfigEnv): Promise<UserConfig
       format: 'es'
     },
     build: {
+      // iOS 端必须显式压低构建目标。
+      //
+      // 踩坑记录：vite 8 默认目标偏高（baseline-widely-available ≈ Safari 16），
+      // 结果产物里出现了「类静态块 static {}」（Safari 16.4+ 才支持）——
+      // 低版本 WebKit 在解析整个 bundle 时会直接抛 SyntaxError，界面纯黑屏且无任何提示。
+      // 静态块的来源有两处：① three.js 源码本身；② esbuild/oxc 为满足
+      // tsconfig 的 useDefineForClassFields:false 而把 `static x = v` 改写成 `static { this.x = v }`。
+      //
+      // Info.plist 的 MinimumOSVersion 是 15.0，所以这里对齐 Safari 15。
+      target: ['safari15'],
       rollupOptions: {
         input: {
           main: 'index.html',

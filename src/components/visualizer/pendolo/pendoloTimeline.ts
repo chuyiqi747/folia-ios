@@ -18,7 +18,9 @@ export const resolvePendoloFallbackAnchorIndex = (
         return -1;
     }
 
-    const finalLine = lines.at(-1);
+    // 不用 lines.at(-1)：Array.prototype.at 要 Safari 15.4+ / iOS 15.4+，
+    // 而本 App 的 MinimumOSVersion 是 15.0。空数组时两者都返回 undefined，语义一致。
+    const finalLine = lines[lines.length - 1];
     const finalRenderEndTime = finalLine?.renderHints?.renderEndTime ?? finalLine?.endTime;
     if (finalRenderEndTime !== undefined && currentTime > finalRenderEndTime) {
         return lines.length;

@@ -225,11 +225,30 @@ class SentenceLayout implements LyricLayoutUnit {
 
     private static splitWesternPhrase(text: string): string[] {
         if (!hasCjkText(text) && text.length > 0) {
-            const splitRegex = /(?<=\w[.,;:!?。，；：！？])(?=\s+\w)/;
-            const parts = text.split(splitRegex);
-            
-            if (parts.length > 1) {
-                return parts.filter(p => p.length > 0);
+            // 注意：这里【不能】用后行断言（lookbehind）。
+            // 原本的写法是 /(?<=\w[.,;:!?。，；：！？])(?=\s+\w)/，
+            // 但后行断言要 Safari 16.4 / iOS 16.4 才支持，而 esbuild 只降级语法、
+            // 不会改写正则字面量里的内容。结果是低版本 WebKit 在解析整个 bundle 时
+            // 直接抛 SyntaxError —— 模块加载失败、界面纯黑屏且没有任何提示。
+            //
+            // 下面用手动扫描实现完全相同的切分语义（在「标点」与「其后空白+单词」之间切开），
+            // 不依赖任何新语法。只用了前向断言 (?=...)，Safari 11+ 即支持。
+            const boundary = /(\w[.,;:!?。，；：！？])(?=\s+\w)/g;
+            const parts: string[] = [];
+            let lastIndex = 0;
+            let match: RegExpExecArray | null;
+
+            while ((match = boundary.exec(text)) !== null) {
+                // match[0] 至少 2 个字符（\w + 标点），lastIndex 必定前进，不会死循环。
+                const end = match.index + match[0].length;
+                parts.push(text.slice(lastIndex, end));
+                lastIndex = end;
+            }
+            parts.push(text.slice(lastIndex));
+
+            const filtered = parts.filter(p => p.length > 0);
+            if (filtered.length > 1) {
+                return filtered;
             }
         }
         
