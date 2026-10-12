@@ -58,6 +58,7 @@ import { useMediaSessionBridge } from './hooks/useMediaSessionBridge';
 import { useCapacitorSystemBars } from './hooks/useCapacitorSystemBars';
 import { useNativeKeyboardInset } from './hooks/useNativeKeyboardInset';
 import { useNativeAppLifecycle } from './hooks/useNativeAppLifecycle';
+import { isCapacitorIOS } from './platform/runtime';
 import { useNativeNowPlaying } from './hooks/useNativeNowPlaying';
 import { usePlayerChromeAutoHide } from './hooks/usePlayerChromeAutoHide';
 import { usePlaybackAudioBridge } from './hooks/usePlaybackAudioBridge';
@@ -271,6 +272,35 @@ export default function App() {
         const saved = localStorage.getItem('local_replaygain_mode');
         return saved === 'track' || saved === 'album' ? saved : 'off';
     });
+
+    // ------------------------------------------------------------------
+    // iOS 上是否允许把 <audio> 接进 Web Audio（实时频谱 + ReplayGain）。
+    //
+    // 默认【关闭】。原因见 usePlaybackAudioBridge 里 enableWebAudioAnalysis 的注释：
+    // createMediaElementSource() 会把音频输出永久改道到 AudioContext，
+    // 而 iOS 在 App 进入后台时会把 AudioContext 置为 interrupted/suspended，
+    // 结果是「一切后台就没声音」+「锁屏不出现 Now Playing 播放器」。
+    //
+    // 不接 Web Audio 之后：可视化器会走它自带的合成信号兜底分支，
+    // 音量改由 audio.volume 控制，ReplayGain 不生效（默认本来就是 off）。
+    // 想要实时频谱的用户可以在 播放设置 里手动打开这个开关。
+    // ------------------------------------------------------------------
+    const [iosRealtimeSpectrum, setIosRealtimeSpectrum] = useState<boolean>(() => {
+        try {
+            return localStorage.getItem('local_ios_realtime_spectrum') === '1';
+        } catch {
+            return false;
+        }
+    });
+    const enableWebAudioAnalysis = !isCapacitorIOS() || iosRealtimeSpectrum;
+    const handleSetIosRealtimeSpectrum = useCallback((enabled: boolean) => {
+        setIosRealtimeSpectrum(enabled);
+        try {
+            localStorage.setItem('local_ios_realtime_spectrum', enabled ? '1' : '0');
+        } catch {
+            // localStorage 不可用时忽略：本次会话仍然生效
+        }
+    }, []);
     const localFileBlobsRef = useRef<Map<string, string>>(new Map()); // id -> blob URL
 
     // Navigation persistence state shared by the Grid home surfaces.
@@ -1394,6 +1424,7 @@ export default function App() {
         isPanelOpen,
         panelTab,
         replayGainMode,
+        enableWebAudioAnalysis,
         shouldAutoPlayRef: shouldAutoPlay,
         audioContextRef,
         analyserRef,
@@ -2898,6 +2929,8 @@ export default function App() {
         obsBrowserSourceStatus,
         refreshObsBrowserSourceStatus,
         onAudioOutputDeviceChange: handleAudioOutputDeviceChange,
+        iosRealtimeSpectrum,
+        onIosRealtimeSpectrumChange: handleSetIosRealtimeSpectrum,
         onToggleTransparentPlayerBackground: toggleTransparentModeWithHandoff,
     }), [
         activePlaybackContext,
@@ -2907,6 +2940,8 @@ export default function App() {
         currentSong?.name,
         handleAudioOutputDeviceChange,
         handleSaveLyricFilterPattern,
+        handleSetIosRealtimeSpectrum,
+        iosRealtimeSpectrum,
         handleToggleNavidromeEnabled,
         leaveStagePlayback,
         loadCurrentSongLyricPreview,

@@ -7,6 +7,7 @@ import { useSettingsUiStore } from '../../../stores/useSettingsUiStore';
 import { CustomSelect } from '../../shared/CustomSelect';
 import { LYRIC_MATCH_SOURCES } from '../../../utils/lyrics/lyricMatchSources';
 import { getLyricProviderPreferenceLabel } from '../../../utils/lyrics/lyricSourceLabels';
+import IosAudioSettingsCard from './IosAudioSettingsCard';
 
 // src/components/modal/settings/PlaybackSettingsSubview.tsx
 // Playback behavior and output-device settings extracted from the global settings modal.
@@ -27,6 +28,9 @@ type PlaybackSettingsSubviewProps = {
     settingsCardClass: string;
     theme?: Theme;
     utilityGhostButtonClass: string;
+    /** iOS 上是否允许把 <audio> 接进 Web Audio（实时频谱）。 */
+    iosRealtimeSpectrum: boolean;
+    onIosRealtimeSpectrumChange: (enabled: boolean) => void;
 };
 
 const stopMediaStream = (stream: MediaStream | null) => {
@@ -40,6 +44,8 @@ const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
     settingsCardClass,
     theme,
     utilityGhostButtonClass,
+    iosRealtimeSpectrum,
+    onIosRealtimeSpectrumChange,
 }) => {
     const { t } = useTranslation();
     const {
@@ -378,6 +384,15 @@ const PlaybackSettingsSubview: React.FC<PlaybackSettingsSubviewProps> = ({
                     )}
                 </div>
             </section>
+
+            {/* iOS 专属：原生音频开关 + 状态诊断。非 iOS 环境内部直接返回 null */}
+            <IosAudioSettingsCard
+                isDaylight={isDaylight}
+                settingsCardClass={settingsCardClass}
+                utilityGhostButtonClass={utilityGhostButtonClass}
+                realtimeSpectrumEnabled={iosRealtimeSpectrum}
+                onRealtimeSpectrumChange={onIosRealtimeSpectrumChange}
+            />
         </div>
     );
 };

@@ -38,6 +38,9 @@ type BuildSettingsDialogModelParams = {
     playerCapConnectionStatus?: PlayerCapConnectionStatus;
     playerCapPlayers?: string[];
     onAudioOutputDeviceChange: (deviceId: string) => Promise<boolean> | boolean;
+    /** iOS 上是否允许把 <audio> 接进 Web Audio（实时频谱）。 */
+    iosRealtimeSpectrum?: boolean;
+    onIosRealtimeSpectrumChange?: (enabled: boolean) => void;
     onToggleTransparentPlayerBackground: (enabled: boolean) => Promise<void> | void;
     obsBrowserSourceStatus?: ObsBrowserSourceStatus | null;
     refreshObsBrowserSourceStatus?: () => Promise<ObsBrowserSourceStatus>;
@@ -65,6 +68,8 @@ export const buildSettingsDialogModel = ({
     playerCapConnectionStatus,
     playerCapPlayers,
     onAudioOutputDeviceChange,
+    iosRealtimeSpectrum,
+    onIosRealtimeSpectrumChange,
     onToggleTransparentPlayerBackground,
     obsBrowserSourceStatus,
     refreshObsBrowserSourceStatus,
@@ -110,6 +115,8 @@ export const buildSettingsDialogModel = ({
             }
         },
         onAudioOutputDeviceChange,
+        iosRealtimeSpectrum,
+        onIosRealtimeSpectrumChange,
         onToggleTransparentPlayerBackground,
         initialTab: state.initialTab,
         initialSubview: state.initialSubview ?? null,

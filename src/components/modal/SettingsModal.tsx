@@ -68,6 +68,9 @@ interface SettingsModalProps {
     onToggleObsBrowserSource?: (enabled: boolean) => Promise<void> | void;
     onRegenerateObsBrowserSourceToken?: () => Promise<void> | void;
     onAudioOutputDeviceChange: (deviceId: string) => Promise<boolean> | boolean;
+    /** iOS 上是否允许把 <audio> 接进 Web Audio（实时频谱）。 */
+    iosRealtimeSpectrum?: boolean;
+    onIosRealtimeSpectrumChange?: (enabled: boolean) => void;
     onToggleTransparentPlayerBackground?: (enabled: boolean) => Promise<void> | void;
     aiTheme?: DualTheme | null;
     customTheme?: DualTheme | null;
@@ -118,6 +121,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     onToggleObsBrowserSource,
     onRegenerateObsBrowserSourceToken,
     onAudioOutputDeviceChange,
+    iosRealtimeSpectrum = false,
+    onIosRealtimeSpectrumChange,
     onToggleTransparentPlayerBackground,
     aiTheme,
     customTheme,
@@ -1527,6 +1532,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                                                 settingsCardClass={settingsCardClass}
                                                 theme={theme}
                                                 utilityGhostButtonClass={utilityGhostButtonClass}
+                                                iosRealtimeSpectrum={iosRealtimeSpectrum}
+                                                onIosRealtimeSpectrumChange={onIosRealtimeSpectrumChange ?? (() => {})}
                                             />
                                         )}
                                         {activeSettingsSection === 'integration' && (

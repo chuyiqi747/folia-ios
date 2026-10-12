@@ -21,6 +21,18 @@ type UsePlaybackAudioBridgeParams = {
     isPanelOpen: boolean;
     panelTab: string;
     replayGainMode: ReplayGainMode;
+    /**
+     * 是否允许把 <audio> 接进 Web Audio 图（用于实时频谱 + ReplayGain）。
+     *
+     * ⚠️ iOS 上必须谨慎：`createMediaElementSource()` 会把元素的音频输出
+     * **永久改道**到 AudioContext。iOS 在 App 进入后台时会把 AudioContext
+     * 置为 interrupted/suspended，于是音频直接静音 —— 表现为「一切后台就停」，
+     * 同时锁屏的 Now Playing 播放器也不出现。
+     *
+     * 因此 iOS 默认传 false（保持 <audio> 的原生播放路径），
+     * 由用户在设置里显式开启「实时频谱」才接 Web Audio。
+     */
+    enableWebAudioAnalysis: boolean;
     shouldAutoPlayRef: MutableRefObject<boolean>;
     audioContextRef: MutableRefObject<AudioContext | null>;
     analyserRef: MutableRefObject<AnalyserNode | null>;
@@ -47,6 +59,7 @@ export function usePlaybackAudioBridge({
     isPanelOpen,
     panelTab,
     replayGainMode,
+    enableWebAudioAnalysis,
     shouldAutoPlayRef,
     audioContextRef,
     analyserRef,
@@ -66,6 +79,15 @@ export function usePlaybackAudioBridge({
 
     const setupAudioAnalyzer = useCallback(() => {
         if (!audioRef.current || sourceRef.current) return;
+
+        // iOS 默认不接 Web Audio —— 见 enableWebAudioAnalysis 的注释。
+        // 不接之后：analyserRef 保持 null，可视化器会走它自己的合成信号兜底分支
+        // （usePlaybackVisualizerBridge 里 else 分支的正弦呼吸动画），
+        // 但 <audio> 保持原生播放，后台播放与锁屏 Now Playing 才能正常工作。
+        if (!enableWebAudioAnalysis) {
+            return;
+        }
+
         try {
             const AudioContextClass = window.AudioContext || (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
             const ctx = new AudioContextClass();
@@ -88,7 +110,7 @@ export function usePlaybackAudioBridge({
         } catch (error) {
             console.error('Audio Context Setup Failed:', error);
         }
-    }, [audioContextRef, audioRef, analyserRef, gainNodeRef, getTargetPlaybackVolume, sourceRef, syncOutputGain]);
+    }, [audioContextRef, audioRef, analyserRef, enableWebAudioAnalysis, gainNodeRef, getTargetPlaybackVolume, sourceRef, syncOutputGain]);
 
     const cacheSongAssets = useCallback(async () => {
         if (!currentSong || !audioSrc || audioSrc.startsWith('blob:')) return;

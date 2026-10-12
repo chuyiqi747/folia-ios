@@ -79,3 +79,6 @@ build/xcodebuild.log
 # generate-ios-assets.mjs 的临时暂存目录（正常会被 finally 清掉，留个保险）
 .asset-staging/
 docs/TODO.md
+
+# 兼容性验证用的临时构建目录（parse-check.mjs 的输入，不进仓库）
+.compat-check/

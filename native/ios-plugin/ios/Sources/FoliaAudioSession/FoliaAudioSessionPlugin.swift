@@ -58,7 +58,8 @@ public class FoliaAudioSessionPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setPlaybackState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "updateProgress", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clearNowPlaying", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "getAudioSessionInfo", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "getAudioSessionInfo", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getNowPlayingInfo", returnType: CAPPluginReturnPromise)
     ]
 
     // Remote command 的 target 需要保持强引用，否则会被系统回收，按钮全失效。
@@ -68,6 +69,10 @@ public class FoliaAudioSessionPlugin: CAPPlugin, CAPBridgedPlugin {
     private var isInterrupted = false
     // 打断前的播放状态，恢复时据此决定是否自动 resume。
     private var wasPlayingBeforeInterruption = false
+
+    // AVAudioSession 不暴露「当前是否 active」，自己记一个。
+    // 只用于 getNowPlayingInfo 的诊断输出。
+    private var isSessionActive = false
 
     // MARK: - Lifecycle
 
@@ -105,13 +110,15 @@ public class FoliaAudioSessionPlugin: CAPPlugin, CAPBridgedPlugin {
         do {
             // .playback 表示「这是内容播放，不是录音也不是提示音」，
             // 它与 UIBackgroundModes=audio 配合才能后台播放。
-            // 用 .longFormAudio 而非 .default，让系统知道这是长时间连续播放
-            // （音乐 / 播客），系统会更积极地保持会话。
+            // mode 保持 .default：.longFormAudio 是为有声书 / 播客设计的，
+            // 用于音乐反而会让部分系统版本在切歌时产生额外的缓冲停顿。
             try session.setCategory(.playback, mode: .default, options: [])
 
             // 允许 AirPlay / 蓝牙 / 车机的远程控制（锁屏按钮、方向盘按键）。
             try session.setActive(true)
+            isSessionActive = true
         } catch {
+            isSessionActive = false
             CAPLog.print("[FoliaAudioSession] Failed to configure session: \(error)")
         }
     }
@@ -122,6 +129,43 @@ public class FoliaAudioSessionPlugin: CAPPlugin, CAPBridgedPlugin {
             "category": AVAudioSession.sharedInstance().category.rawValue,
             "sampleRate": AVAudioSession.sharedInstance().sampleRate,
             "outputVolume": AVAudioSession.sharedInstance().outputVolume
+        ])
+    }
+
+    /// 诊断用：一次性把「音频会话 + 正在播放信息 + 远程命令」的真实状态回给 JS。
+    ///
+    /// 为什么需要：iOS 上这些状态在设备端看不见，出问题时只能靠猜。
+    /// 有了它，设置页就能直接显示「会话类别是不是 playback / 有没有激活 /
+    /// Now Playing 有没有内容 / 锁屏按钮注册了几个」，一眼定位。
+    @objc func getNowPlayingInfo(_ call: CAPPluginCall) {
+        let session = AVAudioSession.sharedInstance()
+        let info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+
+        var playbackStateName = "unknown"
+        if #available(iOS 13.0, *) {
+            switch MPNowPlayingInfoCenter.default().playbackState {
+            case .playing: playbackStateName = "playing"
+            case .paused: playbackStateName = "paused"
+            case .stopped: playbackStateName = "stopped"
+            @unknown default: playbackStateName = "unknown"
+            }
+        }
+
+        call.resolve([
+            "sessionCategory": session.category.rawValue,
+            "sessionMode": session.mode.rawValue,
+            "sessionActive": isSessionActive,
+            "sampleRate": session.sampleRate,
+            "outputVolume": session.outputVolume,
+            "hasNowPlayingInfo": !info.isEmpty,
+            "title": (info[MPMediaItemPropertyTitle] as? String) ?? "",
+            "artist": (info[MPMediaItemPropertyArtist] as? String) ?? "",
+            "playbackRate": (info[MPNowPlayingInfoPropertyPlaybackRate] as? Double) ?? 0,
+            "elapsed": (info[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double) ?? 0,
+            "duration": (info[MPMediaItemPropertyPlaybackDuration] as? Double) ?? 0,
+            "hasArtwork": info[MPMediaItemPropertyArtwork] != nil,
+            "playbackState": playbackStateName,
+            "registeredCommandCount": registeredCommands.count
         ])
     }
 
@@ -187,6 +231,13 @@ public class FoliaAudioSessionPlugin: CAPPlugin, CAPBridgedPlugin {
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
 
+        // ⚠️ iOS 13+ 必须显式维护 playbackState。
+        // 只设 nowPlayingInfo 而不设 playbackState 时，锁屏 / 控制中心的
+        // 「正在播放」卡片在部分系统版本上不会出现（或出现后不显示按钮）。
+        if #available(iOS 13.0, *) {
+            MPNowPlayingInfoCenter.default().playbackState = playbackRate > 0 ? .playing : .paused
+        }
+
         // 异步拉取封面。注意这里是 native 层下载，
         // 不受 WKWebView 跨域限制，比 JS 侧处理省心。
         if let urlString = artworkUrl, !urlString.isEmpty {
@@ -230,6 +281,11 @@ public class FoliaAudioSessionPlugin: CAPPlugin, CAPBridgedPlugin {
             info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+
+        // 与 updateNowPlaying 一样，playbackState 必须同步维护。
+        if #available(iOS 13.0, *) {
+            MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
+        }
 
         call.resolve()
     }

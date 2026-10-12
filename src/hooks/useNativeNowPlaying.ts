@@ -251,6 +251,14 @@ export const useNativeNowPlaying = (options: UseNativeNowPlayingOptions): void =
         const audio = audioRef.current;
         const elapsed = audio && Number.isFinite(audio.currentTime) ? audio.currentTime : undefined;
 
+        // 每次真正开始播放时再激活一次会话。
+        // 为什么不能只在挂载时激活一次：iOS 在电话打断、其它 App 抢占、
+        // 或者长时间空闲之后会把会话置回非激活状态，而重新激活不会自动发生。
+        // 会话没激活 -> 后台立刻静音、锁屏也不出现播放器，症状与「功能没写」一模一样。
+        if (playbackState === 'playing') {
+            void activateAudioSession();
+        }
+
         void publishPlaybackState(playbackState, elapsed);
     }, [audioRef, playbackState]);
 

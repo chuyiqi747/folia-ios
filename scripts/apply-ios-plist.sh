@@ -133,24 +133,72 @@ if [ "${FOLIA_PHOTO_LIBRARY:-1}" = "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. ATS —— 允许访问 localhost 的 HTTP 后端
+# 5. ATS —— 允许访问 localhost / 局域网的 HTTP 后端
 #
-#    只开 localhost 例外，不开 NSAllowsArbitraryLoads。
-#    全局放开明文 HTTP 是上架审核的高频拒绝原因。
-#    部署到 Vercel / Cloudflare 后是 HTTPS，这个例外用不到但留着无害。
+#    背景：音源服务（NeteaseCloudMusicApi）是跑在你自己电脑上的 HTTP 服务。
+#    三种接法：
+#      a) 隧道（https）      —— 不用改 ATS，但走国外中转，很慢
+#      b) 局域网直连         —— http://192.168.x.x:3000，最快，但需要本地网络例外
+#      c) localhost 本机     —— 仅当服务跑在设备上时才有意义
+#
+#    这里只开必要的三个开关，仍然【不开】NSAllowsArbitraryLoads：
+#      - NSAllowsLocalNetworking             允许明文访问局域网私有地址（10/172.16-31/192.168）
+#      - NSAllowsArbitraryLoadsInWebContent  允许 WKWebView 里发起明文请求。
+#        为什么必须单独开这个：页面本身是 https://localhost（Capacitor 的 iosScheme），
+#        从 https 页面请求 http://192.168.x.x 属于「混合内容」，
+#        WebKit 会直接拦掉 —— 只开 NSAllowsLocalNetworking 是不够的。
+#        这个键只影响 WebView 内容，不像 NSAllowsArbitraryLoads 那样全局放开，
+#        上架审核风险小得多（而且它本来就是给混合 App 用的标准键）。
 # ---------------------------------------------------------------------------
-if has_key "NSAppTransportSecurity"; then
-  echo "  = NSAppTransportSecurity 已存在（保留你已有的配置）"
-  KEPT=$((KEPT + 1))
-else
+if ! has_key "NSAppTransportSecurity"; then
   $PB -c "Add :NSAppTransportSecurity dict" "$PLIST" >/dev/null
+  echo "  + NSAppTransportSecurity"
+  ADDED=$((ADDED + 1))
+else
+  echo "  = NSAppTransportSecurity 已存在，逐项补齐"
+  KEPT=$((KEPT + 1))
+fi
+
+# 5.1 显式声明不全局放开明文（审核友好，也表明我们的意图）
+if has_key "NSAppTransportSecurity:NSAllowsArbitraryLoads"; then
+  echo "  = NSAllowsArbitraryLoads 已存在"
+else
   $PB -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool false" "$PLIST" >/dev/null
+  echo "  + NSAllowsArbitraryLoads = false"
+  ADDED=$((ADDED + 1))
+fi
+
+# 5.2 局域网明文（10.x / 172.16-31.x / 192.168.x / .local）
+if has_key "NSAppTransportSecurity:NSAllowsLocalNetworking"; then
+  echo "  = NSAllowsLocalNetworking 已存在"
+else
+  $PB -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" "$PLIST" >/dev/null
+  echo "  + NSAllowsLocalNetworking = true（局域网直连音源）"
+  ADDED=$((ADDED + 1))
+fi
+
+# 5.3 WKWebView 内允许明文（否则 https 页面请求 http 后端会被当混合内容拦掉）
+if has_key "NSAppTransportSecurity:NSAllowsArbitraryLoadsInWebContent"; then
+  echo "  = NSAllowsArbitraryLoadsInWebContent 已存在"
+else
+  $PB -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoadsInWebContent bool true" "$PLIST" >/dev/null
+  echo "  + NSAllowsArbitraryLoadsInWebContent = true（WebView 内允许 http 音源）"
+  ADDED=$((ADDED + 1))
+fi
+
+# 5.4 localhost 例外（保留原有行为）
+if ! has_key "NSAppTransportSecurity:NSExceptionDomains"; then
   $PB -c "Add :NSAppTransportSecurity:NSExceptionDomains dict" "$PLIST" >/dev/null
+  ADDED=$((ADDED + 1))
+fi
+if ! has_key "NSAppTransportSecurity:NSExceptionDomains:localhost"; then
   $PB -c "Add :NSAppTransportSecurity:NSExceptionDomains:localhost dict" "$PLIST" >/dev/null
   $PB -c "Add :NSAppTransportSecurity:NSExceptionDomains:localhost:NSExceptionAllowsInsecureHTTPLoads bool true" "$PLIST" >/dev/null
   $PB -c "Add :NSAppTransportSecurity:NSExceptionDomains:localhost:NSIncludesSubdomains bool true" "$PLIST" >/dev/null
-  echo "  + NSAppTransportSecurity（仅 localhost 例外，未开全局明文）"
+  echo "  + NSExceptionDomains:localhost（允许明文）"
   ADDED=$((ADDED + 1))
+else
+  echo "  = NSExceptionDomains:localhost 已存在"
 fi
 
 # ---------------------------------------------------------------------------

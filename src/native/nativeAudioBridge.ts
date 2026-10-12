@@ -40,6 +40,32 @@ export interface AudioSessionInfo {
     sampleRate: number;
 }
 
+/**
+ * 诊断快照。iOS 上「后台不播 / 锁屏没有控制」这类问题在设备端看不见，
+ * 这个结构把原生侧的真实状态一次性摊开，方便在设置页直接显示。
+ */
+export interface NowPlayingDiagnostics {
+    /** AVAudioSession.category，正常应为 "Playback"。 */
+    sessionCategory: string;
+    sessionMode: string;
+    /** 我们是否成功 setActive(true) 过。 */
+    sessionActive: boolean;
+    sampleRate: number;
+    outputVolume: number;
+    /** MPNowPlayingInfoCenter 是否有内容（有内容锁屏才会出播放器）。 */
+    hasNowPlayingInfo: boolean;
+    title: string;
+    artist: string;
+    playbackRate: number;
+    elapsed: number;
+    duration: number;
+    hasArtwork: boolean;
+    /** iOS 13+ 的 MPNowPlayingInfoCenter.playbackState。 */
+    playbackState: string;
+    /** 已注册的锁屏远程命令数量，正常应为 8。 */
+    registeredCommandCount: number;
+}
+
 export interface RemoteCommandEvent {
     command: RemoteCommandName;
     /** 仅 seek 命令携带，单位秒。 */
@@ -81,6 +107,7 @@ interface FoliaAudioSessionPlugin {
     }): Promise<void>;
     clearNowPlaying(): Promise<void>;
     getAudioSessionInfo(): Promise<AudioSessionInfo>;
+    getNowPlayingInfo(): Promise<NowPlayingDiagnostics>;
 
     addListener(
         eventName: 'remoteCommand',
@@ -205,6 +232,16 @@ export const getAudioSessionInfo = async (): Promise<AudioSessionInfo | null> =>
     if (!(await isNativeAudioAvailable())) return null;
     try {
         return await NativeAudioSession.getAudioSessionInfo();
+    } catch {
+        return null;
+    }
+};
+
+/** 诊断用：拿一份原生「正在播放」与音频会话的完整快照。 */
+export const getNowPlayingDiagnostics = async (): Promise<NowPlayingDiagnostics | null> => {
+    if (!(await isNativeAudioAvailable())) return null;
+    try {
+        return await NativeAudioSession.getNowPlayingInfo();
     } catch {
         return null;
     }
