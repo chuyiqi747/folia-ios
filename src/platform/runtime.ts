@@ -17,17 +17,47 @@ export const hasElectronBridge = (): boolean => (
   && Boolean((window as typeof window & { electron?: unknown }).electron)
 );
 
-const isNative = (): boolean => (
-  typeof window !== 'undefined' && Capacitor.isNativePlatform()
-);
+/**
+ * 是否运行在 Capacitor 原生壳里。
+ *
+ * 为什么不能只用 Capacitor.isNativePlatform()：
+ * 它依赖 @capacitor/core 在页面早期完成原生桥注入。极少数时序下（脚本被
+ * 提前执行、或原生桥尚未就绪）它会返回 false，于是 iOS 被误判成 'web' ——
+ * 后果是灾难性的：enableWebAudioAnalysis 会变成 true（把 <audio> 接进
+ * Web Audio，后台静音、锁屏失效），useNativeNowPlaying 里的所有 iOS 分支
+ * 也会整段跳过（锁屏控制完全没有）。症状与「功能没写」一模一样，极难排查。
+ *
+ * 因此这里加一层原生桥兜底：Capacitor iOS 一定会把 bridge 挂在
+ * window.webkit.messageHandlers 上，这是比 JS API 更底层的存在性证据。
+ */
+const isNative = (): boolean => {
+    if (typeof window === 'undefined') return false;
+    if (Capacitor.isNativePlatform()) return true;
 
-export const isCapacitorAndroid = (): boolean => (
-  isNative() && Capacitor.getPlatform() === 'android'
-);
+    const w = window as typeof window & {
+        webkit?: { messageHandlers?: Record<string, unknown> };
+    };
+    return Boolean(w.webkit?.messageHandlers?.bridge);
+};
 
-export const isCapacitorIOS = (): boolean => (
-  isNative() && Capacitor.getPlatform() === 'ios'
-);
+export const isCapacitorAndroid = (): boolean => {
+    if (!isNative()) return false;
+    if (Capacitor.getPlatform() === 'android') return true;
+    // 兜底：原生桥在但 platform 读不到时，用 UA 判断。
+    if (typeof navigator === 'undefined') return false;
+    return /Android/i.test(navigator.userAgent);
+};
+
+export const isCapacitorIOS = (): boolean => {
+    if (!isNative()) return false;
+    if (Capacitor.getPlatform() === 'ios') return true;
+    // 兜底：原生桥在但 platform 读不到时，用 UA 判断。
+    // 注意 iPadOS 13+ 的桌面模式 UA 里没有 'iPad'，要配合 maxTouchPoints。
+    if (typeof navigator === 'undefined') return false;
+    const ua = navigator.userAgent;
+    return /iPad|iPhone|iPod/.test(ua)
+        || (ua.includes('Macintosh') && navigator.maxTouchPoints > 1);
+};
 
 /** 任意 Capacitor 原生移动端（Android 或 iOS）。 */
 export const isCapacitorMobile = (): boolean => isCapacitorAndroid() || isCapacitorIOS();

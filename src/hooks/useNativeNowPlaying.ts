@@ -251,19 +251,17 @@ export const useNativeNowPlaying = (options: UseNativeNowPlayingOptions): void =
         const audio = audioRef.current;
         const elapsed = audio && Number.isFinite(audio.currentTime) ? audio.currentTime : undefined;
 
-        // 每次真正开始播放时再激活一次会话。
-        // 为什么不能只在挂载时激活一次：iOS 在电话打断、其它 App 抢占、
-        // 或者长时间空闲之后会把会话置回非激活状态，而重新激活不会自动发生。
-        // 会话没激活 -> 后台立刻静音、锁屏也不出现播放器，症状与「功能没写」一模一样。
+        // ⚠️ 这里【不再】每次播放都调用 activateAudioSession()。
         //
-        // ⚠️ 这里「每次播放都调」之所以安全，前提是原生侧 configureAudioSession()
-        // 里的 setCategory 必须幂等（只在类别不对时才调）。
-        // 曾经因为原生无条件 setCategory，而 setCategory 会重配音频路由、
-        // 掐断正在播放的音频 —— 表现就是「每次点播放只响约 1 秒就停」。
-        // 动那行代码时务必留意这个联动。
-        if (playbackState === 'playing') {
-            void activateAudioSession();
-        }
+        // 曾经在这里加了「每次开始播放都重新激活会话」，本意是防止会话被电话
+        // 打断 / 被其它 App 抢占后不再自动激活。但它在 iOS 上会掐断正在播放的
+        // 音频（重配音频会话会中断当前播放），表现为「每次点播放只响约 1 秒」。
+        //
+        // 会话恢复的责任现在完全交给原生层：
+        //   - 插件 load() 时已经配置并激活了会话；
+        //   - AVAudioSession.interruptionNotification 的 .ended 分支会重新激活；
+        //   - routeChangeNotification 处理耳机 / 蓝牙切换。
+        // 所以 JS 侧不需要、也不应该在每次播放时插手会话状态。
 
         void publishPlaybackState(playbackState, elapsed);
     }, [audioRef, playbackState]);
