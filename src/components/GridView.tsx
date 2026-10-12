@@ -13,7 +13,8 @@ import { saveToCache, getFromCache, removeFromCache } from '../services/db';
 import { omni } from '../services/onlineMusic/omni';
 import { getProviderCacheKey, getProviderCacheWithLegacyMigration } from '../services/onlineMusic/providerStorage';
 import { getPlaybackSongKey } from '../utils/appPlaybackGuards';
-import { useFoliaHexViewport } from './folia-grid/useFoliaHexViewport';
+import { useFoliaMosaicViewport } from './folia-grid/useFoliaMosaicViewport';
+import { buildMosaicTiles } from './folia-grid/mosaicLayout';
 import {
     applyHexCardState,
     computeHexCardFrame,
@@ -134,20 +135,37 @@ const getStoredLocalTrackSortDirection = (): LocalSongFolderSortDirection => {
 const GRID_VIEW_CARD_VISIBILITY_BUFFER = 72;
 
 /**
- * 把任意字符串映射到 [0, 1) 的确定值（FNV-1a 32 位）。
+ * 封面缩略图地址缓存。
  *
- * 用途：给每张卡片算一个稳定的「随机」尺寸。
- * 必须**确定**而不是真随机 —— 同一张专辑在任何时候、任何位置都得是同一个大小，
- * 否则每次重排整面墙都会抖一遍。
+ * ⚠️ 这是这一版最重要的性能修复之一。
+ *
+ * 以前网格里的 <img> 直接用了 `item.coverUrl`，也就是**网易云原图** ——
+ * 常见是 1000×1000 甚至更大。同屏 60~100 张卡片各拉一张原图，
+ * 意味着几十 MB 的图片数据、每张都要走一遍完整的 JPEG 解码 +
+ * 纹理上传。这部分开销完全在主线程/渲染线程上，和拖拽的 rAF 循环直接抢时间 ——
+ * 网格自己的布局计算已经优化到每帧 0.01ms 了，但图片一解码，
+ * 帧率照样掉下来。这就是「改了界面之后还是卡」的第二个根因。
+ *
+ * 网易云的 CDN 支持 `?param=NyN` 直接取缩略图（见 utils/coverUrl.ts），
+ * 换成 2 倍卡片边长的图之后，像素量降到原来的 1/20 左右。
+ *
+ * 加一层缓存是因为 getSizedCoverUrl 内部要 new URL()，
+ * 而卡片列表在拖拽裁剪时会反复重渲染，不缓存的话每次都要重解析一遍。
  */
-const hashUnit = (key: string): number => {
-    let h = 2166136261;
-    for (let i = 0; i < key.length; i++) {
-        h ^= key.charCodeAt(i);
-        h = Math.imul(h, 16777619);
-    }
-    return (h >>> 0) / 4294967296;
+const sizedCoverCache = new Map<string, string>();
+const getCachedSizedCoverUrl = (url: string, size: number): string => {
+    const key = `${size}|${url}`;
+    const cached = sizedCoverCache.get(key);
+    if (cached !== undefined) return cached;
+    const resolved = getSizedCoverUrl(url, size);
+    // 简单粗暴的上限保护：超过就整体清掉，避免长时间使用后无限增长。
+    if (sizedCoverCache.size > 800) sizedCoverCache.clear();
+    sizedCoverCache.set(key, resolved);
+    return resolved;
 };
+
+/** 封面的目标像素边长：卡片实际尺寸 × 2（Retina 够用，再大就是浪费解码时间）。 */
+const COVER_PIXEL_RATIO = 2;
 
 const GRID_SEARCH_DEBOUNCE_MS = 80;
 const TRACK_REMOVAL_ANIMATION_MS = 460;
@@ -226,6 +244,13 @@ export const PolaroidCard = React.memo<{
         // 「封面保持正方形占上半部分」的分支，多出来的地方留深色底、
         // 标题仍然压在整块底部。
         const coverFillsCard = cardHeight <= cardWidth * 1.25;
+
+        // 用缩略图而不是原图 —— 见 getCachedSizedCoverUrl 的注释。
+        // 取卡片的**长边**算目标尺寸，保证任何跨格的卡片都不会糊。
+        const coverPixelSize = Math.ceil(Math.max(cardWidth, cardHeight) * COVER_PIXEL_RATIO);
+        const coverSrc = item.coverUrl
+            ? getCachedSizedCoverUrl(item.coverUrl, coverPixelSize)
+            : '';
         return (
             <div
                 className="relative overflow-hidden theme-polaroid-card"
@@ -238,10 +263,9 @@ export const PolaroidCard = React.memo<{
                     // 也加 0.3s 过渡，于是每一帧都在追一个过期的目标值，直接卡成幻灯片。
                     // 密集封面墙下同屏卡片数翻了几倍，这个问题会被放大，所以这里写死 none。
                     transition: 'none',
-                    // 只有聚焦卡片带阴影 —— 参考截图里浮起来的就是中心那一张。
-                    // 不能给每张都加：同屏 200 张卡片各带一个 blur 阴影，
-                    // 栅格化开销会直接爆炸。
-                    boxShadow: isFocused ? '0 12px 32px rgba(0, 0, 0, 0.55)' : undefined,
+                    // 聚焦卡片：白色描边环（参考截图里被强调的那张）。
+                    // 不用 blur 阴影（合成器负担重），用 0px 偏移的实色环即可。
+                    boxShadow: isFocused ? '0 0 0 2px rgba(255,255,255,0.9), 0 6px 24px rgba(0,0,0,0.45)' : undefined,
                 }}
                 onClick={(e) => {
                     if (isEditMode) {
@@ -263,7 +287,7 @@ export const PolaroidCard = React.memo<{
                     {item.coverUrl ? (
                         <>
                             <img
-                                src={item.coverUrl}
+                                src={coverSrc}
                                 alt={typeof item.name === 'string' ? item.name : ''}
                                 loading="lazy"
                                 decoding="async"
@@ -291,7 +315,7 @@ export const PolaroidCard = React.memo<{
                                 className="w-full h-full object-cover transition-opacity duration-350 pointer-events-none select-none opacity-0"
                             />
                             <div className="absolute inset-0 bg-zinc-300/40 dark:bg-zinc-700/40 transition-opacity duration-350 flex items-center justify-center">
-                                <Disc size={32} className="opacity-20 animate-spin" style={{ animationDuration: '3s', color: 'var(--text-primary)' }} />
+                                <Disc size={32} className="opacity-20" style={{ color: 'var(--text-primary)' }} />
                             </div>
                         </>
                     ) : (
@@ -302,7 +326,7 @@ export const PolaroidCard = React.memo<{
                 </div>
 
                 {/* 底部渐变遮罩 + 标题 / 歌手（直接压在封面上） */}
-                <div className="absolute inset-x-0 bottom-0 z-10 px-2 pb-1.5 pt-6 bg-gradient-to-t from-black/80 via-black/40 to-transparent pointer-events-none">
+                <div className="absolute inset-x-0 bottom-0 z-10 px-1.5 pb-1 pt-5 bg-gradient-to-t from-black/80 via-black/45 to-transparent pointer-events-none">
                     <div className="text-[10px] font-semibold text-white/95 truncate leading-tight">
                         {item.name}
                     </div>
@@ -589,77 +613,77 @@ export const GridView: React.FC<GridViewProps> = ({
         return () => observer.disconnect();
     }, []);
 
-    // 自由封面墙参数
+    // 紧凑马赛克封面墙参数
     //
-    // 用户要的是：**大小不一 + 有一个最小尺寸下限 + 突出自由感**。
-    // 所以这里不再是一个固定边长，而是给出一个区间：
-    //   - minSize  —— 最小号卡片的边长。这是**硬性下限**，低于它就会出现
-    //                 「点不到、看不清」的卡片。iOS 上 1 CSS px = 1 pt，
-    //                 苹果 HIG 的最小点击目标是 44pt，而这里最小也有 100pt
-    //                 （手机档 84pt），留了 2 倍以上余量。
-    //   - maxSize  —— 最大号卡片的边长。
-    //   - spacing  —— 六边形格子的间距。取「平均边长 + 10px」：
-    //                 平均大小的卡片之间约 10px 缝，大卡片会轻微压住邻居，
-    //                 小卡片周围留一点呼吸 —— 这个「压一点、让一点」的
-    //                 不均匀感就是自由感的来源。
+    // 参考截图（用户给的那三张）实测出来的规律：
+    //   - 底层是**均匀方格**，竖向接缝严格等距（实测 85px），横向同一间距；
+    //   - 封面之间只有 **3~5px** 的缝 —— 整屏铺满，不是「大间距 + 漂浮卡片」；
+    //   - 单张封面可以**跨格**（1×1 / 2×1 / 1×2 / 2×2），所以大小明显不一，
+    //     但跨的是整数格，整面墙严丝合缝、没有空洞。
     //
-    // 每张卡片具体取多大，见下面的 `cardSizes`（由 item.id 哈希决定，稳定不闪）。
+    // 所以这里给的是：
+    //   - cell —— 单格边长（含缝）。1×1 的卡片就是 cell - gap 见方。
+    //   - gap  —— 缝宽。参考截图 3~5px，这里按屏幕档位取 3~6。
+    //   - 最小尺寸下限 —— 由 cell 保证：cell 最小 84px（手机档），
+    //     扣掉缝也有 81px，是苹果 HIG 最小点击目标 44pt 的 1.8 倍以上，
+    //     封面缩略图也看得清。
     //
-    // maxDistance 决定「多大范围算中心」：缩放从中心 1.28 衰减到 maxDistance 处的 1.0。
-    // 收得比较小，所以只有中心一张（外加贴身的邻居）会被放大。
+    // 每张卡片具体跨几格，见 mosaicLayout.ts 的 pickSpan（由 item.id 哈希决定，
+    // 同一张专辑永远是同一个大小，不会重排就抖）。
+    //
+    // maxDistance 决定「多大范围算中心」：缩放从中心 1.16 衰减到 maxDistance 处的 1.0。
     const layoutConfig = useMemo(() => {
         const width = containerSize.width;
-        let minSize: number;
-        let maxSize: number;
-        let spacing: number;
+        let cell: number;
+        let gap: number;
         let maxDistance: number;
         let lodStart: number;
         let lodEnd: number;
 
         if (width < 768) {
             // 手机 / 窄屏
-            minSize = 80;
-            maxSize = 140;
-            spacing = 116;
-            maxDistance = 170;
-            lodStart = 100;
-            lodEnd = 140;
+            cell = 84;
+            gap = 3;
+            maxDistance = 150;
+            lodStart = 96;
+            lodEnd = 138;
         } else if (width < 1440) {
-            // iPad 横屏 / 桌面（约 8.2 列）
-            minSize = 96;
-            maxSize = 176;
-            spacing = 144;
-            maxDistance = 210;
-            lodStart = 120;
-            lodEnd = 170;
+            // iPad 横屏 / 桌面（约 12 列）
+            cell = 96;
+            gap = 4;
+            maxDistance = 172;
+            lodStart = 110;
+            lodEnd = 158;
         } else if (width < 2000) {
             // 大屏桌面
-            minSize = 110;
-            maxSize = 200;
-            spacing = 162;
-            maxDistance = 238;
-            lodStart = 136;
-            lodEnd = 192;
+            cell = 112;
+            gap = 5;
+            maxDistance = 200;
+            lodStart = 128;
+            lodEnd = 184;
         } else {
             // 超宽桌面
-            minSize = 126;
-            maxSize = 228;
-            spacing = 184;
-            maxDistance = 270;
-            lodStart = 154;
-            lodEnd = 218;
+            cell = 128;
+            gap = 6;
+            maxDistance = 228;
+            lodStart = 146;
+            lodEnd = 210;
         }
 
+        // 最大号卡片是 2×2 格
+        const maxTile = cell * 2 - gap;
+
         return {
-            minSize,
-            maxSize,
-            spacing,
-            // 六边形格子是正方形步长
-            spacingX: spacing,
-            spacingY: spacing,
+            cell,
+            gap,
+            // 兼容旧字段名：外层还有几处按 spacing 算「一格多远」
+            spacing: cell,
+            spacingX: cell,
+            spacingY: cell,
+            maxSize: maxTile,
             // 视口可见性判断要用**最大**号卡片，否则大卡片会被提前裁掉
-            cardWidth: maxSize,
-            cardHeight: maxSize,
+            cardWidth: maxTile,
+            cardHeight: maxTile,
             maxDistance,
             lodStart,
             lodEnd,
@@ -676,6 +700,7 @@ export const GridView: React.FC<GridViewProps> = ({
     // 而同屏可见的卡片一张都不少。
     //
     // 缓冲直接复用可见性缓冲，保证「挂载集合 ⊇ 可见集合」，不会出现空洞。
+    // 马赛克墙里视口裁剪走的是 useFoliaMosaicViewport 的矩形相交查询。
     const renderHalfWidth = useMemo(
         () => containerSize.width / 2 + layoutConfig.maxSize / 2 + GRID_VIEW_CARD_VISIBILITY_BUFFER,
         [containerSize.width, layoutConfig.maxSize]
@@ -693,17 +718,6 @@ export const GridView: React.FC<GridViewProps> = ({
         const cardRadius = Math.sqrt(cardWidth ** 2 + cardHeight ** 2) / 2;
         return viewportRadius + cardRadius + 80;
     }, [containerSize, layoutConfig]);
-
-    // 枚举用的半径取矩形的对角线长度 —— 保证矩形四角也在六边形枚举范围内
-    const renderRadius = useMemo(
-        () => Math.hypot(renderHalfWidth, renderHalfHeight),
-        [renderHalfWidth, renderHalfHeight]
-    );
-
-    const renderRing = useMemo(
-        () => Math.ceil(renderRadius / layoutConfig.spacing) + 1,
-        [layoutConfig.spacing, renderRadius]
-    );
 
     const cardFrameOptions = useMemo(() => ({
         clipRadius,
@@ -1506,43 +1520,36 @@ export const GridView: React.FC<GridViewProps> = ({
     }, [allGridItems, deferredSearchQuery]);
 
     /**
-     * 每张卡片的**基础尺寸**。
+     * 马赛克墙的落位表。
      *
-     * 为什么不用 Math.random：尺寸必须对同一张专辑永远稳定 —— 拖来拖去、
-     * 切歌单再回来、重进页面，同一张封面都应该是同一个大小；否则整面墙每次
-     * 重排都「抖」一遍，那不叫自由感，那叫闪。所以用 item.id 的 FNV-1a 哈希
-     * 取一个 [0,1) 的确定值。
+     * buildMosaicTiles 从墙面中心向外逐格扫描，给每张专辑定一个**跨格数**
+     * （1×1 / 2×1 / 1×2 / 2×2，由 item.id 的哈希决定）和一个格坐标，
+     * 于是每张卡片的中心位置、宽高就都确定了。
      *
-     * 长宽比也轻微浮动（0.92~1.10），让整面墙不至于像一张 Excel 表格；
-     * 幅度刻意压在 10% 以内，`object-cover` 裁掉的那一点点看不出来。
-     *
-     * 输出成**数组**（按网格下标索引）而不是 Map：
-     * 拖拽时每帧每张卡片都要取自己的 sizeRank，用 Map 就得每帧为每张卡片
-     * 拼一次字符串 key —— 那是纯浪费，数组下标取值不产生任何分配。
+     * 关键点：
+     *   - 跨的是**整数格**，所以整面墙严丝合缝、没有空洞 ——
+     *     这正是参考截图的样子（「随机尺寸 + 随机位置」一定会散成一团沙）；
+     *   - 尺寸由哈希决定，同一张专辑永远是同一个大小，不会重排就抖；
+     *   - 输出成**数组**（按网格下标索引）而不是 Map：拖拽时每帧每张卡片都要
+     *     取自己的 sizeRank，用 Map 就得每帧拼一次字符串 key，纯浪费。
      */
-    const cardSizes = useMemo(() => {
-        const { minSize, maxSize } = layoutConfig;
-        const span = Math.max(0, maxSize - minSize);
-        const list: { width: number; height: number; sizeRank: number }[] = new Array(gridItems.length);
+    const mosaicTiles = useMemo(
+        () => buildMosaicTiles(
+            gridItems.map((item) => String(item.id)),
+            layoutConfig.cell,
+            layoutConfig.gap
+        ),
+        [gridItems, layoutConfig.cell, layoutConfig.gap]
+    );
 
-        for (let i = 0; i < gridItems.length; i++) {
-            const key = String(gridItems[i].id);
-            const u = hashUnit(key);
-            const v = hashUnit(`${key}#aspect`);
-            // 0.72 次幂把分布往「大」的方向偏一点，保证整面墙足够密、不至于到处是洞
-            const size = minSize + span * Math.pow(u, 0.72);
-            const width = Math.round(size / 4) * 4;
-            const height = Math.round((size * (0.92 + 0.18 * v)) / 4) * 4;
-            list[i] = {
-                width,
-                height,
-                // 大的压住小的：zIndex = 缩放档位 * 64 + 尺寸档位
-                sizeRank: Math.min(SIZE_RANK_BASE - 1, Math.max(0, Math.round((Math.max(width, height) - minSize) / 4))),
-            };
-        }
-
-        return list;
-    }, [gridItems, layoutConfig]);
+    const cardSizes = useMemo(
+        () => mosaicTiles.map((tile) => ({
+            width: tile.width,
+            height: tile.height,
+            sizeRank: tile.sizeRank,
+        })),
+        [mosaicTiles]
+    );
 
     const cardSizeRanks = useMemo(
         () => Int32Array.from(cardSizes, (entry) => entry.sizeRank),
@@ -1591,17 +1598,15 @@ export const GridView: React.FC<GridViewProps> = ({
         };
     }, [dragX, dragY]);
 
+    // 卡片锚点表 —— 沿用旧名字 baseCoords，因为下面十几处只用到 baseX / baseY。
+    const baseCoords = mosaicTiles;
+
     const {
-        coords: baseCoords,
         renderedIndexes,
         renderedIndexesRef,
         updateRenderedIndexesForViewport,
-    } = useFoliaHexViewport({
-        itemCount: gridItems.length,
-        spacingX: layoutConfig.spacingX,
-        spacingY: layoutConfig.spacingY,
-        renderRadius,
-        renderRing,
+    } = useFoliaMosaicViewport({
+        tiles: mosaicTiles,
         renderHalfWidth,
         renderHalfHeight,
         fallbackIndexRef: focusedIndexRef,
@@ -1615,11 +1620,15 @@ export const GridView: React.FC<GridViewProps> = ({
         let minY = Infinity;
         let maxY = -Infinity;
 
-        baseCoords.forEach((c) => {
-            if (c.baseX < minX) minX = c.baseX;
-            if (c.baseX > maxX) maxX = c.baseX;
-            if (c.baseY < minY) minY = c.baseY;
-            if (c.baseY > maxY) maxY = c.baseY;
+        // 用卡片的**边缘**而不是中心算边界，否则最大的那张（2×2）
+        // 会有一半露在可拖拽范围之外。
+        baseCoords.forEach((c, idx) => {
+            const halfW = (cardSizes[idx]?.width ?? layoutConfig.cell) / 2;
+            const halfH = (cardSizes[idx]?.height ?? layoutConfig.cell) / 2;
+            if (c.baseX - halfW < minX) minX = c.baseX - halfW;
+            if (c.baseX + halfW > maxX) maxX = c.baseX + halfW;
+            if (c.baseY - halfH < minY) minY = c.baseY - halfH;
+            if (c.baseY + halfH > maxY) maxY = c.baseY + halfH;
         });
 
         const bufferX = Math.max(0, containerSize.width / 2 - 2 * layoutConfig.spacingX);
@@ -1631,7 +1640,7 @@ export const GridView: React.FC<GridViewProps> = ({
             top: -maxY - bufferY,
             bottom: -minY + bufferY,
         };
-    }, [baseCoords, layoutConfig, containerSize]);
+    }, [baseCoords, cardSizes, layoutConfig, containerSize]);
 
     const commitFocusedIndex = useCallback((index = focusedIndexRef.current) => {
         if (pendingFocusCommitTimeoutRef.current) {

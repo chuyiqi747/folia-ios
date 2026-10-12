@@ -1,4 +1,13 @@
-import type { HexGridCoord } from './hexViewport';
+/**
+ * 卡片锚点：只需要「卡片中心相对墙面原点的偏移」。
+ *
+ * 刻意不依赖 HexGridCoord —— 马赛克布局用的是 MosaicTile（每张卡片位置和
+ * 尺寸都不同），只要它带 baseX / baseY 就能复用这一整套变换逻辑。
+ */
+export interface CardAnchor {
+    baseX: number;
+    baseY: number;
+}
 
 /**
  * 密集封面墙的卡片视觉状态。
@@ -25,8 +34,14 @@ const SCALE_RANK_UNIT = 100;
 /** 按钮透明度量化档数。50 档 ≈ 2% 一档，肉眼看不出台阶。 */
 const OPACITY_RANK_STEPS = 50;
 
-/** 封面墙基础缩放：屏幕正中央那张卡片的放大倍数。 */
-const WALL_CENTER_SCALE = 1.28;
+/**
+ * 封面墙基础缩放：屏幕正中央那张卡片的放大倍数。
+ *
+ * 从 1.28 降到 1.16 —— 紧凑马赛克里卡片之间只有 4px 缝，
+ * 放大太多会明显压住邻居、破坏「一整面墙」的观感。
+ * 参考截图里被强调的那张也基本不放大，靠白色描边来突出。
+ */
+const WALL_CENTER_SCALE = 1.16;
 
 /** 放大的衰减指数。越大，放大区收得越紧（只有最中心一小片被强调）。 */
 const WALL_SCALE_FALLOFF = 1.6;
@@ -108,13 +123,13 @@ const formatNumber = (value: number, precision = 4): string => {
  *      边缘空白越大，同时挂载了大量本不该存在的离屏卡片。
  * 同级组件 GridMap.tsx(581/700) 与 ArtistGridView.tsx(923) 就是正确写法。
  */
-const buildTransform = (coord: HexGridCoord, scale: number): string => (
+const buildTransform = (coord: CardAnchor, scale: number): string => (
     `translate3d(${formatNumber(coord.baseX, 3)}px, ${formatNumber(coord.baseY, 3)}px, 0) scale(${formatNumber(scale)})`
 );
 
 /** 只算数字、不做任何字符串分配的快速路径。 */
 export const computeHexCardState = (
-    coord: HexGridCoord,
+    coord: CardAnchor,
     dx: number,
     dy: number,
     {
@@ -206,7 +221,7 @@ export const computeHexCardState = (
 const rankToOpacity = (rank: number): string => String(Number((rank / OPACITY_RANK_STEPS).toFixed(3)));
 
 /** 把数字状态变成 CSS 字符串。只在状态变化或首次挂载时调用。 */
-export const materializeHexCardFrame = (coord: HexGridCoord, state: HexCardState): HexCardFrame => ({
+export const materializeHexCardFrame = (coord: CardAnchor, state: HexCardState): HexCardFrame => ({
     ...state,
     display: state.visible ? '' : 'none',
     transform: buildTransform(coord, state.scaleRank / SCALE_RANK_UNIT),
@@ -238,7 +253,7 @@ export const createHexCardFrameStyleCache = (frame: HexCardFrame): HexCardFrameS
  */
 export const applyHexCardState = (
     target: HexCardStyleTarget,
-    coord: HexGridCoord,
+    coord: CardAnchor,
     state: HexCardState,
     cache: HexCardFrameStyleCache
 ): boolean => {
@@ -286,7 +301,7 @@ export const applyHexCardState = (
 
 /** 兼容旧签名：一次算完并物化成字符串。只用于卡片首次挂载时的初始样式。 */
 export const computeHexCardFrame = (
-    coord: HexGridCoord,
+    coord: CardAnchor,
     dx: number,
     dy: number,
     options: HexCardFrameOptions,

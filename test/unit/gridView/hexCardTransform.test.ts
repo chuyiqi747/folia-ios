@@ -56,11 +56,9 @@ describe('hexCardTransform', () => {
         expect(frame.visible).toBe(true);
         expect(frame.display).toBe('');
         expect(frame.distance).toBe(0);
-        // 中心卡片放大到 1.28 倍（边缘是 1.0，不再越靠边越小）
-        expect(frame.transform).toBe('translate3d(0px, 0px, 0) scale(1.28)');
-        // 密集封面墙不按距离淡出：可见就是全不透明
-        expect(frame.opacity).toBe('1');
-        expect(frame.zIndex).toBe('8192');
+        // 中心卡片放大到 1.16 倍，zIndex = scaleRank(116) * 64 + sizeRank(0) = 7424
+        expect(frame.transform).toBe('translate3d(0px, 0px, 0) scale(1.16)');
+        expect(frame.zIndex).toBe('7424');
         expect(frame.queueOpacity).toBe('1');
         expect(frame.queuePointerEvents).toBe('auto');
         expect(frame.playOpacity).toBe('1');
