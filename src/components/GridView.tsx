@@ -15,9 +15,11 @@ import { getProviderCacheKey, getProviderCacheWithLegacyMigration } from '../ser
 import { getPlaybackSongKey } from '../utils/appPlaybackGuards';
 import { useFoliaHexViewport } from './folia-grid/useFoliaHexViewport';
 import {
-    applyHexCardFrameStyles,
+    applyHexCardState,
     computeHexCardFrame,
+    computeHexCardState,
     createHexCardFrameStyleCache,
+    SIZE_RANK_BASE,
     type HexCardFrameStyleCache,
 } from './folia-grid/hexCardTransform';
 import PlaylistSelectionDialog from './shared/PlaylistSelectionDialog';
@@ -129,11 +131,26 @@ const getStoredLocalTrackSortDirection = (): LocalSongFolderSortDirection => {
     const stored = localStorage.getItem(LOCAL_TRACK_SORT_DIRECTION_STORAGE_KEY);
     return stored === 'desc' ? stored : 'asc';
 };
-const GRID_VIEW_RENDER_BUFFER_FACTOR = 0.35;
 const GRID_VIEW_CARD_VISIBILITY_BUFFER = 72;
+
+/**
+ * 把任意字符串映射到 [0, 1) 的确定值（FNV-1a 32 位）。
+ *
+ * 用途：给每张卡片算一个稳定的「随机」尺寸。
+ * 必须**确定**而不是真随机 —— 同一张专辑在任何时候、任何位置都得是同一个大小，
+ * 否则每次重排整面墙都会抖一遍。
+ */
+const hashUnit = (key: string): number => {
+    let h = 2166136261;
+    for (let i = 0; i < key.length; i++) {
+        h ^= key.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0) / 4294967296;
+};
+
 const GRID_SEARCH_DEBOUNCE_MS = 80;
 const TRACK_REMOVAL_ANIMATION_MS = 460;
-const TRACK_REMOVAL_BEZIER = [0.22, 0.8, 0.24, 1] as const;
 
 /**
  * High-performance memoized Polaroid card — pure visual component.
@@ -357,7 +374,7 @@ export const PolaroidCard = React.memo<{
                             event.stopPropagation();
                             onEditLocalMetadata();
                         }}
-                        className="absolute left-1.5 top-1.5 rounded-md bg-black/55 p-1 text-white/80 backdrop-blur-sm transition-colors hover:bg-black/75 hover:text-white focus-visible:outline-none z-20"
+                        className="absolute left-1.5 top-1.5 rounded-md bg-black/55 p-1 text-white/80 transition-colors hover:bg-black/75 hover:text-white focus-visible:outline-none z-20"
                         title={t('localMusic.manualMetadataMatch')}
                         aria-label={t('localMusic.manualMetadataMatch')}
                     >
@@ -407,7 +424,7 @@ export const PolaroidCard = React.memo<{
                                 transform: 'scale(var(--play-scale, 0.8))',
                                 transition: 'opacity 0.25s cubic-bezier(0.16, 1, 0.3, 1), transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.2s ease, color 0.2s ease',
                             }}
-                            className="w-10 h-10 rounded-full bg-black/45 text-white backdrop-blur-md border border-white/25 hover:bg-white hover:text-black flex items-center justify-center pointer-events-auto"
+                            className="w-10 h-10 rounded-full bg-black/55 text-white border border-white/25 hover:bg-white hover:text-black flex items-center justify-center pointer-events-auto"
                             title={t('playlist.play')}
                         >
                             <Play size={16} fill="currentColor" className="ml-0.5" />
@@ -423,7 +440,7 @@ export const PolaroidCard = React.memo<{
                             onAddQueue();
                         }}
                         style={{ opacity: 'var(--queue-opacity, 1)' as any, pointerEvents: 'var(--queue-pe, auto)' as any }}
-                        className="absolute top-1.5 right-1.5 w-6 h-6 rounded-full bg-black/50 text-white/85 backdrop-blur-md border border-white/20 hover:bg-white hover:text-black flex items-center justify-center pointer-events-auto z-20"
+                        className="absolute top-1.5 right-1.5 w-6 h-6 rounded-full bg-black/60 text-white/85 border border-white/20 hover:bg-white hover:text-black flex items-center justify-center pointer-events-auto z-20"
                         title={t('navidrome.addToQueue')}
                     >
                         <Plus size={11} />
@@ -572,69 +589,101 @@ export const GridView: React.FC<GridViewProps> = ({
         return () => observer.disconnect();
     }, []);
 
-    // 密集封面墙参数
+    // 自由封面墙参数
     //
-    // 参考截图（用户给的「第一张」）是一面**铺满整屏的封面墙**：
-    //   - 正方形瓷砖，封面裁切填满，瓷砖之间只有几个像素的缝；
-    //   - 没有拍立得白边、没有圆角、没有卡片阴影、没有下方信息条；
-    //   - 标题/歌手以白字直接压在封面底部；
-    //   - 只有屏幕正中央那张卡片明显放大并浮起来。
+    // 用户要的是：**大小不一 + 有一个最小尺寸下限 + 突出自由感**。
+    // 所以这里不再是一个固定边长，而是给出一个区间：
+    //   - minSize  —— 最小号卡片的边长。这是**硬性下限**，低于它就会出现
+    //                 「点不到、看不清」的卡片。iOS 上 1 CSS px = 1 pt，
+    //                 苹果 HIG 的最小点击目标是 44pt，而这里最小也有 100pt
+    //                 （手机档 84pt），留了 2 倍以上余量。
+    //   - maxSize  —— 最大号卡片的边长。
+    //   - spacing  —— 六边形格子的间距。取「平均边长 + 10px」：
+    //                 平均大小的卡片之间约 10px 缝，大卡片会轻微压住邻居，
+    //                 小卡片周围留一点呼吸 —— 这个「压一点、让一点」的
+    //                 不均匀感就是自由感的来源。
     //
-    // 所以这里 cardWidth == cardHeight（正方形），spacingX/Y 只比它大 4px。
-    // 以 1180px 宽的 iPad 为例，Desktop 档 spacingX = 120 → 约 9.8 列，
-    // 与参考截图的 9~10 列吻合。
+    // 每张卡片具体取多大，见下面的 `cardSizes`（由 item.id 哈希决定，稳定不闪）。
     //
-    // maxDistance 决定「多大范围算中心」：rawScale 从中心 1.42 衰减到
-    // maxDistance 处的 1.0。收得比较小，所以只有中心一张（外加贴身的邻居）
-    // 会被放大，其余整面墙是均匀的。
+    // maxDistance 决定「多大范围算中心」：缩放从中心 1.28 衰减到 maxDistance 处的 1.0。
+    // 收得比较小，所以只有中心一张（外加贴身的邻居）会被放大。
     const layoutConfig = useMemo(() => {
         const width = containerSize.width;
+        let minSize: number;
+        let maxSize: number;
+        let spacing: number;
+        let maxDistance: number;
+        let lodStart: number;
+        let lodEnd: number;
+
         if (width < 768) {
             // 手机 / 窄屏
-            return {
-                cardWidth: 88,
-                cardHeight: 88,
-                spacingX: 92,
-                spacingY: 92,
-                maxDistance: 150,
-                lodStart: 84,
-                lodEnd: 115,
-            };
+            minSize = 80;
+            maxSize = 140;
+            spacing = 116;
+            maxDistance = 170;
+            lodStart = 100;
+            lodEnd = 140;
         } else if (width < 1440) {
-            // iPad 横屏 / 桌面
-            return {
-                cardWidth: 116,
-                cardHeight: 116,
-                spacingX: 120,
-                spacingY: 120,
-                maxDistance: 192,
-                lodStart: 110,
-                lodEnd: 150,
-            };
+            // iPad 横屏 / 桌面（约 8.2 列）
+            minSize = 96;
+            maxSize = 176;
+            spacing = 144;
+            maxDistance = 210;
+            lodStart = 120;
+            lodEnd = 170;
         } else if (width < 2000) {
             // 大屏桌面
-            return {
-                cardWidth: 132,
-                cardHeight: 132,
-                spacingX: 136,
-                spacingY: 136,
-                maxDistance: 216,
-                lodStart: 125,
-                lodEnd: 170,
-            };
+            minSize = 110;
+            maxSize = 200;
+            spacing = 162;
+            maxDistance = 238;
+            lodStart = 136;
+            lodEnd = 192;
         } else {
             // 超宽桌面
-            return {
-                cardWidth: 152,
-                cardHeight: 152,
-                spacingX: 156,
-                spacingY: 156,
-                maxDistance: 248,
-                lodStart: 140,
-                lodEnd: 195,
-            };
+            minSize = 126;
+            maxSize = 228;
+            spacing = 184;
+            maxDistance = 270;
+            lodStart = 154;
+            lodEnd = 218;
         }
+
+        return {
+            minSize,
+            maxSize,
+            spacing,
+            // 六边形格子是正方形步长
+            spacingX: spacing,
+            spacingY: spacing,
+            // 视口可见性判断要用**最大**号卡片，否则大卡片会被提前裁掉
+            cardWidth: maxSize,
+            cardHeight: maxSize,
+            maxDistance,
+            lodStart,
+            lodEnd,
+        };
     }, [containerSize.width]);
+
+
+
+    // 矩形裁剪的半宽 / 半高。
+    //
+    // 视口是矩形，但旧代码用「以视口半对角线为半径的圆」决定挂载哪些卡片 ——
+    // 那个圆的面积是屏幕的 2 倍多，等于有一半挂载的卡片永远在屏幕外，
+    // 白白占着 DOM 节点和合成层。改成矩形之后挂载量大约降到 60%，
+    // 而同屏可见的卡片一张都不少。
+    //
+    // 缓冲直接复用可见性缓冲，保证「挂载集合 ⊇ 可见集合」，不会出现空洞。
+    const renderHalfWidth = useMemo(
+        () => containerSize.width / 2 + layoutConfig.maxSize / 2 + GRID_VIEW_CARD_VISIBILITY_BUFFER,
+        [containerSize.width, layoutConfig.maxSize]
+    );
+    const renderHalfHeight = useMemo(
+        () => containerSize.height / 2 + layoutConfig.maxSize / 2 + GRID_VIEW_CARD_VISIBILITY_BUFFER,
+        [containerSize.height, layoutConfig.maxSize]
+    );
 
     // Dynamically calculate visible clipping radius centered on (0,0) viewport coordinates
     const clipRadius = useMemo(() => {
@@ -642,19 +691,19 @@ export const GridView: React.FC<GridViewProps> = ({
         const { cardWidth, cardHeight } = layoutConfig;
         const viewportRadius = Math.sqrt((width / 2) ** 2 + (height / 2) ** 2);
         const cardRadius = Math.sqrt(cardWidth ** 2 + cardHeight ** 2) / 2;
-        // 80px 缓冲足够挡住快速拖拽时的「跳出来」——瓷砖只有 116px，
-        // 而裁剪半径本身已经含了整屏对角线 + 一张卡的半径，余量很足。
-        // 之前是 200px，在密集封面墙下会白挂载一大圈离屏卡片。
         return viewportRadius + cardRadius + 80;
     }, [containerSize, layoutConfig]);
 
-    const renderRadius = useMemo(() => (
-        clipRadius + Math.max(layoutConfig.spacingX, layoutConfig.spacingY) * GRID_VIEW_RENDER_BUFFER_FACTOR
-    ), [clipRadius, layoutConfig.spacingX, layoutConfig.spacingY]);
+    // 枚举用的半径取矩形的对角线长度 —— 保证矩形四角也在六边形枚举范围内
+    const renderRadius = useMemo(
+        () => Math.hypot(renderHalfWidth, renderHalfHeight),
+        [renderHalfWidth, renderHalfHeight]
+    );
 
-    const renderRing = useMemo(() => (
-        Math.ceil(renderRadius / Math.min(layoutConfig.spacingX, layoutConfig.spacingY)) + 1
-    ), [layoutConfig.spacingX, layoutConfig.spacingY, renderRadius]);
+    const renderRing = useMemo(
+        () => Math.ceil(renderRadius / layoutConfig.spacing) + 1,
+        [layoutConfig.spacing, renderRadius]
+    );
 
     const cardFrameOptions = useMemo(() => ({
         clipRadius,
@@ -1455,6 +1504,50 @@ export const GridView: React.FC<GridViewProps> = ({
             return searchableText.includes(query);
         });
     }, [allGridItems, deferredSearchQuery]);
+
+    /**
+     * 每张卡片的**基础尺寸**。
+     *
+     * 为什么不用 Math.random：尺寸必须对同一张专辑永远稳定 —— 拖来拖去、
+     * 切歌单再回来、重进页面，同一张封面都应该是同一个大小；否则整面墙每次
+     * 重排都「抖」一遍，那不叫自由感，那叫闪。所以用 item.id 的 FNV-1a 哈希
+     * 取一个 [0,1) 的确定值。
+     *
+     * 长宽比也轻微浮动（0.92~1.10），让整面墙不至于像一张 Excel 表格；
+     * 幅度刻意压在 10% 以内，`object-cover` 裁掉的那一点点看不出来。
+     *
+     * 输出成**数组**（按网格下标索引）而不是 Map：
+     * 拖拽时每帧每张卡片都要取自己的 sizeRank，用 Map 就得每帧为每张卡片
+     * 拼一次字符串 key —— 那是纯浪费，数组下标取值不产生任何分配。
+     */
+    const cardSizes = useMemo(() => {
+        const { minSize, maxSize } = layoutConfig;
+        const span = Math.max(0, maxSize - minSize);
+        const list: { width: number; height: number; sizeRank: number }[] = new Array(gridItems.length);
+
+        for (let i = 0; i < gridItems.length; i++) {
+            const key = String(gridItems[i].id);
+            const u = hashUnit(key);
+            const v = hashUnit(`${key}#aspect`);
+            // 0.72 次幂把分布往「大」的方向偏一点，保证整面墙足够密、不至于到处是洞
+            const size = minSize + span * Math.pow(u, 0.72);
+            const width = Math.round(size / 4) * 4;
+            const height = Math.round((size * (0.92 + 0.18 * v)) / 4) * 4;
+            list[i] = {
+                width,
+                height,
+                // 大的压住小的：zIndex = 缩放档位 * 64 + 尺寸档位
+                sizeRank: Math.min(SIZE_RANK_BASE - 1, Math.max(0, Math.round((Math.max(width, height) - minSize) / 4))),
+            };
+        }
+
+        return list;
+    }, [gridItems, layoutConfig]);
+
+    const cardSizeRanks = useMemo(
+        () => Int32Array.from(cardSizes, (entry) => entry.sizeRank),
+        [cardSizes]
+    );
     const hasSearchQuery = deferredSearchQuery.trim().length > 0;
     const contextActionTracks = useMemo(() => (
         resolveGridViewContextTracks(gridItems, playableTracks, hasSearchQuery)
@@ -1509,6 +1602,8 @@ export const GridView: React.FC<GridViewProps> = ({
         spacingY: layoutConfig.spacingY,
         renderRadius,
         renderRing,
+        renderHalfWidth,
+        renderHalfHeight,
         fallbackIndexRef: focusedIndexRef,
     });
 
@@ -1723,11 +1818,12 @@ export const GridView: React.FC<GridViewProps> = ({
         return renderedIndexes.map((idx) => {
             const item = gridItems[idx];
             const coord = baseCoords[idx];
-            if (!item || !coord) return null;
+            const cardSize = cardSizes[idx];
+            if (!item || !coord || !cardSize) return null;
 
             const initialDx = dragX.get();
             const initialDy = dragY.get();
-            const initialFrame = computeHexCardFrame(coord, initialDx, initialDy, cardFrameOptions);
+            const initialFrame = computeHexCardFrame(coord, initialDx, initialDy, cardFrameOptions, cardSize.sizeRank);
 
             const animateEntrance = shouldAnimateItemEntrance(String(item.id));
             const trackKey = String(item.id);
@@ -1751,11 +1847,11 @@ export const GridView: React.FC<GridViewProps> = ({
                     className="absolute select-none pointer-events-auto folia-grid-card-frame"
                     style={{
                         transformOrigin: 'center center',
+                        // 只做 layout/style 收敛，**不加 paint** ——
+                        // 卡片在中心被放大到 1.28 倍时会溢出这个盒子，
+                        // paint 收敛会把它裁掉。backfaceVisibility 已移除：
+                        // 没有任何 3D 变换了，留着它只是白白触发图层提升。
                         contain: 'layout style',
-                        backfaceVisibility: 'hidden',
-                        // 密集平面墙不需要 3D 上下文：perspective 会强制建立独立的
-                        // 3D 渲染层，同屏几百张卡片时开销很可观。transform 本身只有
-                        // translate3d + scale，去掉 perspective 后视觉无差别。
                         display: initialFrame.display || undefined,
                         transform: initialFrame.transform,
                         opacity: initialFrame.opacity,
@@ -1767,78 +1863,64 @@ export const GridView: React.FC<GridViewProps> = ({
                         '--play-pe': initialFrame.playPointerEvents,
                     } as React.CSSProperties}
                 >
-                    <motion.div
-                        initial={animateEntrance ? { opacity: 0, scale: 0.98 } : false}
-                        animate={isRemovingTrack
-                            ? { opacity: [1, 1, 0], scale: [1, 0.98, 0.96] }
-                            : { opacity: 1, scale: 1 }}
-                        // ⚠️ 刻意【不设 exit 动画】。
-                        //
-                        // 卡片被移出列表只有两种原因：① 拖到屏幕外被裁剪掉；
-                        // ② 用户删歌。第 ② 种走的是上面的 isRemovingTrack 分支
-                        // （animate + 延时卸载），不依赖 exit。
-                        // 而第 ① 种如果配了 exit，AnimatePresence 会把每一张
-                        // 被裁掉的卡片多留在 DOM 里 0.26s 并跑一遍动画 —— 快速拖拽时
-                        // 每秒有几十张卡片在屏幕外做「淡出」，纯属白烧 CPU。
-                        // 去掉之后卡片立刻卸载，DOM 规模也稳定。
-                        transition={isRemovingTrack
-                            ? { duration: TRACK_REMOVAL_ANIMATION_MS / 1000, times: [0, 0.72, 1], ease: TRACK_REMOVAL_BEZIER }
-                            : { duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
-                        style={{
-                            transformOrigin: 'center center',
-                            // 不再常驻 will-change。
-                            // 卡片自己的 transform 已经由 translate3d 提升为独立图层；
-                            // 再挂一个常驻 willChange 只会让同屏 180 张卡片
-                            // 一直占着合成层内存。入场/删除动画期间
-                            // framer-motion 会自行加 will-change，不需要我们常驻。
-                            pointerEvents: isRemovingTrack ? 'none' : undefined,
-                            position: 'relative',
-                        }}
+                    {/* ⚠️ 刻意不用 motion.div / AnimatePresence。
+                        入场与删除动画改成纯 CSS @keyframes
+                        （见 index.css 的 .folia-card-enter / .folia-card-removing）。
+                        transform / opacity 的 CSS 动画由合成器线程直接跑，完全不占主线程，
+                        也就不会和拖拽的 rAF 循环抢时间。
+                        以前每张卡片都是一个 framer-motion 组件，入场/删除时要在主线程上
+                        跑一遍 JS 插值 —— 同屏 100+ 张时这部分开销和拖拽本身是一个数量级。 */}
+                    <div
+                        className={`relative ${
+                            isRemovingTrack
+                                ? 'folia-card-removing'
+                                : animateEntrance
+                                    ? 'folia-card-enter'
+                                    : ''
+                        }`}
                     >
-                        <div style={{ backfaceVisibility: 'hidden' }}>
-                            <PolaroidCard
-                                item={item}
-                                isDaylight={isDaylight}
-                                theme={theme}
-                                mode={mode}
-                                t={t}
-                                cardWidth={layoutConfig.cardWidth}
-                                cardHeight={layoutConfig.cardHeight}
-                                isEditMode={isEditMode}
-                                onRemoveTrack={isRemovingTrack ? undefined : () => {
-                                    if (item.rawTrack) handleRemoveTrack(item.rawTrack, item.rawTrackIndex ?? idx, trackKey);
-                                }}
-                                onSelectArtist={onSelectArtist}
-                                onSelectAlbum={onSelectAlbum}
-                                onBeforeNestedNavigate={() => {
+                        <PolaroidCard
+                            item={item}
+                            isDaylight={isDaylight}
+                            theme={theme}
+                            mode={mode}
+                            t={t}
+                            cardWidth={cardSize.width}
+                            cardHeight={cardSize.height}
+                            isEditMode={isEditMode}
+                            onRemoveTrack={isRemovingTrack ? undefined : () => {
+                                if (item.rawTrack) handleRemoveTrack(item.rawTrack, item.rawTrackIndex ?? idx, trackKey);
+                            }}
+                            onSelectArtist={onSelectArtist}
+                            onSelectAlbum={onSelectAlbum}
+                            onBeforeNestedNavigate={() => {
+                                persistNavigationState(idx);
+                            }}
+                            onEditLocalMetadata={(() => {
+                                const songId = (item.rawTrack as UnifiedSong | undefined)?.localRef?.songId;
+                                if (!songId || !sourceActions?.local?.onMatchSong) return undefined;
+                                return () => void sourceActions.local?.onMatchSong?.(songId);
+                            })()}
+                            onSelect={() => {
+                                if (mode === 'tracks' && onSelectTrack && item.rawTrack) {
                                     persistNavigationState(idx);
-                                }}
-                                onEditLocalMetadata={(() => {
-                                    const songId = (item.rawTrack as UnifiedSong | undefined)?.localRef?.songId;
-                                    if (!songId || !sourceActions?.local?.onMatchSong) return undefined;
-                                    return () => void sourceActions.local?.onMatchSong?.(songId);
-                                })()}
-                                onSelect={() => {
-                                    if (mode === 'tracks' && onSelectTrack && item.rawTrack) {
-                                        persistNavigationState(idx);
-                                        onSelectTrack(item.rawTrack, displayTracks);
-                                    } else if (mode === 'collection' && onSelectCollection) {
-                                        onSelectCollection(item.rawCollection || item);
-                                    }
-                                }}
-                                onCenter={() => {
-                                    if (isDraggingRef.current) return;
-                                    centerOnIndex(idx, true);
-                                }}
-                                onAddQueue={() => {
-                                    if (mode === 'tracks' && onAddTrackToQueue && item.rawTrack) {
-                                        onAddTrackToQueue(item.rawTrack);
-                                    }
-                                }}
-                                isFocused={idx === focusedIndex}
-                            />
-                        </div>
-                    </motion.div>
+                                    onSelectTrack(item.rawTrack, displayTracks);
+                                } else if (mode === 'collection' && onSelectCollection) {
+                                    onSelectCollection(item.rawCollection || item);
+                                }
+                            }}
+                            onCenter={() => {
+                                if (isDraggingRef.current) return;
+                                centerOnIndex(idx, true);
+                            }}
+                            onAddQueue={() => {
+                                if (mode === 'tracks' && onAddTrackToQueue && item.rawTrack) {
+                                    onAddTrackToQueue(item.rawTrack);
+                                }
+                            }}
+                            isFocused={idx === focusedIndex}
+                        />
+                    </div>
                 </div>
             );
         });
@@ -1846,12 +1928,11 @@ export const GridView: React.FC<GridViewProps> = ({
         renderedIndexes,
         gridItems,
         baseCoords,
+        cardSizes,
         isDaylight,
         theme,
         mode,
         t,
-        layoutConfig.cardWidth,
-        layoutConfig.cardHeight,
         cardFrameOptions,
         isEditMode,
         focusedIndex,
@@ -1904,11 +1985,23 @@ export const GridView: React.FC<GridViewProps> = ({
                     const i = activeIndexes[activeIndex];
                     const coord = baseCoords[i];
                     if (!coord) continue;
-                    const frame = computeHexCardFrame(coord, dx, dy, cardFrameOptions);
+
+                    // ⚠️ 这里用 computeHexCardState（只算数字）而不是
+                    // computeHexCardFrame（会造 CSS 字符串）。
+                    // 拖拽时同屏 100+ 张卡片里只有放大区那 8 张左右会跨档，
+                    // 其余卡片的状态完全不变 —— 先比整数就能跳过全部字符串构建，
+                    // 否则每帧要为每张卡片都 toFixed + 拼模板串，纯属制造 GC 压力。
+                    const state = computeHexCardState(
+                        coord,
+                        dx,
+                        dy,
+                        cardFrameOptions,
+                        cardSizeRanks[i]
+                    );
 
                     // Track closest card for focusedIndex
-                    if (frame.distanceSq < minDistSq) {
-                        minDistSq = frame.distanceSq;
+                    if (state.distanceSq < minDistSq) {
+                        minDistSq = state.distanceSq;
                         closestIdx = i;
                     }
 
@@ -1916,7 +2009,7 @@ export const GridView: React.FC<GridViewProps> = ({
                     if (!el) continue;
                     const cache = cardFrameStyleCachesRef.current[i] ?? {};
                     cardFrameStyleCachesRef.current[i] = cache;
-                    applyHexCardFrameStyles(el, frame, cache);
+                    applyHexCardState(el, coord, state, cache);
                 }
 
                 // Keep continuous focus out of React state during drag frames.
@@ -1934,7 +2027,7 @@ export const GridView: React.FC<GridViewProps> = ({
             unsubY();
             if (rafId !== null) cancelAnimationFrame(rafId);
         };
-    }, [dragX, dragY, baseCoords, cardFrameOptions, updateRenderedIndexesForViewport]);
+    }, [dragX, dragY, baseCoords, cardFrameOptions, cardSizeRanks, updateRenderedIndexesForViewport]);
 
     // Setup arrow keyboard navigation
     useEffect(() => {
@@ -2253,9 +2346,10 @@ export const GridView: React.FC<GridViewProps> = ({
                         style={{ x: dragX, y: dragY, background: 'rgba(0,0,0,0)', touchAction: 'none' }}
                         className="absolute inset-0 flex items-center justify-center cursor-grab active:cursor-grabbing bg-transparent"
                     >
-                        <AnimatePresence initial={false}>
-                            {memoizedCards}
-                        </AnimatePresence>
+                        {/* 不再用 AnimatePresence 包卡片列表：
+                            卡片没有 exit 动画了（入场/删除都改成 CSS keyframes），
+                            AnimatePresence 在这里只剩「追踪每个子元素生命周期」的开销。 */}
+                        {memoizedCards}
                     </motion.div>
                 )}
 

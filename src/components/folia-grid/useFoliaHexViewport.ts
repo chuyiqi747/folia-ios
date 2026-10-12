@@ -15,6 +15,10 @@ export interface UseFoliaHexViewportOptions {
     spacingY: number;
     renderRadius: number;
     renderRing: number;
+    /** 矩形裁剪的半宽（含缓冲）。给了就优先用矩形，比圆形少挂载约 40%。 */
+    renderHalfWidth?: number;
+    /** 矩形裁剪的半高（含缓冲）。 */
+    renderHalfHeight?: number;
     fallbackIndexRef?: RefObject<number>;
     coords?: HexGridCoord[];
 }
@@ -25,6 +29,8 @@ export const useFoliaHexViewport = ({
     spacingY,
     renderRadius,
     renderRing,
+    renderHalfWidth,
+    renderHalfHeight,
     fallbackIndexRef,
     coords: customCoords,
 }: UseFoliaHexViewportOptions) => {
@@ -97,7 +103,9 @@ export const useFoliaHexViewport = ({
             coords,
             worldX,
             worldY,
-            renderRadius
+            renderRadius,
+            renderHalfWidth,
+            renderHalfHeight
         );
 
         const fallbackIndex = fallbackIndexRef?.current ?? 0;
@@ -115,7 +123,7 @@ export const useFoliaHexViewport = ({
         startTransition(() => {
             setRenderedIndexes(nextIndexes);
         });
-    }, [coordByKey, coords, fallbackIndexRef, renderRadius, renderRing, spacingX, spacingY]);
+    }, [coordByKey, coords, fallbackIndexRef, renderHalfHeight, renderHalfWidth, renderRadius, renderRing, spacingX, spacingY]);
 
     return {
         coords,

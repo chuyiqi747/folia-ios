@@ -170,6 +170,10 @@ export const buildHexGridCoords = (
 };
 
 // Resolves mounted card indexes by combining hex-ring lookup with pixel-radius filtering.
+//
+// 为什么支持矩形裁剪：视口本身是矩形，用「以视口半对角线为半径的圆」去挂载卡片，
+// 面积是屏幕的 2 倍多 —— 有一半挂载的卡片永远在屏幕外。改成矩形（视口半宽/半高 +
+// 一点缓冲）之后，挂载量大约降到 60%，而同屏可见的卡片一张都不少。
 export const resolveVisibleHexIndexes = (
     center: CubeCoord,
     ringRadius: number,
@@ -177,9 +181,12 @@ export const resolveVisibleHexIndexes = (
     coords: HexGridCoord[],
     worldX: number,
     worldY: number,
-    pixelRadius: number
+    pixelRadius: number,
+    halfWidth?: number,
+    halfHeight?: number
 ): number[] => {
     const radiusSq = pixelRadius * pixelRadius;
+    const useRect = halfWidth !== undefined && halfHeight !== undefined;
     const indexes: number[] = [];
 
     forEachCubeInRadius(center, ringRadius, (cube) => {
@@ -191,7 +198,10 @@ export const resolveVisibleHexIndexes = (
 
         const dx = coord.baseX - worldX;
         const dy = coord.baseY - worldY;
-        if (dx * dx + dy * dy <= radiusSq) {
+        const inside = useRect
+            ? Math.abs(dx) <= halfWidth! && Math.abs(dy) <= halfHeight!
+            : dx * dx + dy * dy <= radiusSq;
+        if (inside) {
             indexes.push(index);
         }
     });

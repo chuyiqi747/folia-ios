@@ -128,6 +128,35 @@ html[data-runtime='capacitor-ios'] .fixed.inset-0 {
   border-color: color-mix(in srgb, var(--text-primary) 32%, transparent) !important;
 }
 
+/* ============================================================================
+ * 网格卡片（封面墙）的入场 / 删除动画
+ *
+ * 刻意用 CSS @keyframes，而不是 framer-motion。
+ * transform / opacity 的 CSS 动画由合成器线程直接跑，完全不占主线程，
+ * 因此不会和拖拽的 rAF 循环抢时间。同屏 100+ 张卡片时这个差别非常明显 ——
+ * 用 JS 驱动动画时，每一次入场/删除都在主线程上跑一遍插值。
+ * ========================================================================== */
+
+@keyframes folia-card-enter {
+  from { opacity: 0; transform: scale(0.98); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes folia-card-remove {
+  0%   { opacity: 1; transform: scale(1); }
+  72%  { opacity: 1; transform: scale(0.98); }
+  100% { opacity: 0; transform: scale(0.96); }
+}
+
+.folia-card-enter {
+  animation: folia-card-enter 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.folia-card-removing {
+  animation: folia-card-remove 460ms cubic-bezier(0.22, 0.8, 0.24, 1) forwards;
+  pointer-events: none;
+}
+
 /* Glass panel (search box, sidebar) theme-adaptive styles */
 .theme-glass-panel {
   background-color: color-mix(in srgb, var(--bg-color) 85%, transparent) !important;

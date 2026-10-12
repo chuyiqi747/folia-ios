@@ -18,6 +18,23 @@ export const hasElectronBridge = (): boolean => (
 );
 
 /**
+ * Capacitor iOS 的原生桥挂在 `window.webkit.messageHandlers.bridge` 上。
+ *
+ * 这是 WKWebView 独有的 API —— Android WebView 上根本不存在。
+ * 所以它同时是两条结论的证据：
+ *   ① 确实在原生壳里（比 Capacitor.isNativePlatform() 更底层，不依赖注入时序）；
+ *   ② 确实是 iOS（Android 不可能有它）。
+ * 这比看 UA 可靠得多：iPadOS 13+ 的桌面模式 UA 里连 "iPad" 都没有。
+ */
+const hasIosWebkitBridge = (): boolean => {
+    if (typeof window === 'undefined') return false;
+    const w = window as typeof window & {
+        webkit?: { messageHandlers?: Record<string, unknown> };
+    };
+    return Boolean(w.webkit?.messageHandlers?.bridge);
+};
+
+/**
  * 是否运行在 Capacitor 原生壳里。
  *
  * 为什么不能只用 Capacitor.isNativePlatform()：
@@ -26,31 +43,27 @@ export const hasElectronBridge = (): boolean => (
  * 后果是灾难性的：enableWebAudioAnalysis 会变成 true（把 <audio> 接进
  * Web Audio，后台静音、锁屏失效），useNativeNowPlaying 里的所有 iOS 分支
  * 也会整段跳过（锁屏控制完全没有）。症状与「功能没写」一模一样，极难排查。
- *
- * 因此这里加一层原生桥兜底：Capacitor iOS 一定会把 bridge 挂在
- * window.webkit.messageHandlers 上，这是比 JS API 更底层的存在性证据。
  */
-const isNative = (): boolean => {
-    if (typeof window === 'undefined') return false;
-    if (Capacitor.isNativePlatform()) return true;
-
-    const w = window as typeof window & {
-        webkit?: { messageHandlers?: Record<string, unknown> };
-    };
-    return Boolean(w.webkit?.messageHandlers?.bridge);
-};
+const isNative = (): boolean => (
+    Capacitor.isNativePlatform() || hasIosWebkitBridge()
+);
 
 export const isCapacitorAndroid = (): boolean => {
+    if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android') return true;
+    // WKWebView 的桥存在 => 一定是 iOS，绝不可能是 Android。
+    // 必须排在 UA 判断之前，否则 iOS 在 UA 对不上时会被当成 Android。
+    if (hasIosWebkitBridge()) return false;
     if (!isNative()) return false;
-    if (Capacitor.getPlatform() === 'android') return true;
     // 兜底：原生桥在但 platform 读不到时，用 UA 判断。
     if (typeof navigator === 'undefined') return false;
     return /Android/i.test(navigator.userAgent);
 };
 
 export const isCapacitorIOS = (): boolean => {
+    if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'ios') return true;
+    // 桥存在即可判定为 iOS，不必再看 UA（UA 在 iPadOS 桌面模式下不可靠）
+    if (hasIosWebkitBridge()) return true;
     if (!isNative()) return false;
-    if (Capacitor.getPlatform() === 'ios') return true;
     // 兜底：原生桥在但 platform 读不到时，用 UA 判断。
     // 注意 iPadOS 13+ 的桌面模式 UA 里没有 'iPad'，要配合 maxTouchPoints。
     if (typeof navigator === 'undefined') return false;
