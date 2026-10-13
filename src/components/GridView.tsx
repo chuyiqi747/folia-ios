@@ -609,6 +609,15 @@ export const GridView: React.FC<GridViewProps> = ({
     const isComposingSearchRef = useRef(false);
     const pendingFocusCommitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const isDraggingRef = useRef(false);
+    /**
+     * 「这个 focusedIndex 值是拖拽/滚轮收尾同步过来的 —— 别吸附到它上面」。
+     *
+     * 存的是**具体的索引**而不是布尔值：`setFocusedIndex` 走的是
+     * `startTransition`（低优先级，可能被延迟或打断），期间完全可能有别的
+     * 导航把 state 改成另一个值。只认「等于这个索引」的那次 effect，
+     * 就不会误吞掉真正的跳转。
+     */
+    const suppressRecenterIndexRef = useRef<number | null>(null);
 
     // Refs for direct DOM manipulation — eliminates per-card useTransform subscriptions
     const cardWrapperRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -720,38 +729,41 @@ export const GridView: React.FC<GridViewProps> = ({
         // 去掉 translate3d / contain」让 WebKit 把卡片合并进父层瓦片，
         // 图层数从 60~140 降到接近 1，这是数量级的改善。
         //
-        // 所以这里只做一次**温和**的放大（96 → 104，约 +8%），作为额外保险，
-        // 而不再像上一版设想的那样猛推到 120~140 —— 那会让一屏可见专辑数
-        // 从 39 掉到 13~18，把参考图那种「密密麻麻一面墙」的观感丢掉。
-        // 104 只让可见数从 39 降到约 34，基本无感。
+        // 因此这里可以再放大一档 —— 图层合并之后，「每多挂载一张卡片」的
+        // 边际成本已经很低（只是多烘一个矩形进瓦片，不再多一个合成层）。
+        //
+        // 104 → 116（约 +12%）：手机上一屏可见专辑数从约 34 降到约 27。
+        // 仍然保持「密密麻麻一面墙」的观感，而单张封面明显更好辨认。
+        // maxDistance / lodStart / lodEnd 按同一比例同步缩放，
+        // 否则中心放大会显得"贴太近"。
         if (width < 768) {
             // 手机 / 窄屏
-            cell = 104;
-            gap = 4;
-            maxDistance = 182;
-            lodStart = 117;
-            lodEnd = 169;
-        } else if (width < 1440) {
-            // iPad 横屏 / 桌面（约 10 列）
             cell = 116;
-            gap = 5;
+            gap = 4;
             maxDistance = 203;
             lodStart = 130;
             lodEnd = 188;
+        } else if (width < 1440) {
+            // iPad 横屏 / 桌面（约 10 列）
+            cell = 128;
+            gap = 5;
+            maxDistance = 224;
+            lodStart = 143;
+            lodEnd = 207;
         } else if (width < 2000) {
             // 大屏桌面
-            cell = 132;
+            cell = 144;
             gap = 5;
-            maxDistance = 231;
-            lodStart = 148;
-            lodEnd = 214;
+            maxDistance = 252;
+            lodStart = 161;
+            lodEnd = 233;
         } else {
             // 超宽桌面
-            cell = 148;
+            cell = 160;
             gap = 6;
-            maxDistance = 259;
-            lodStart = 166;
-            lodEnd = 240;
+            maxDistance = 280;
+            lodStart = 179;
+            lodEnd = 259;
         }
 
         // 最大号卡片是 2×2 格
@@ -1763,6 +1775,16 @@ export const GridView: React.FC<GridViewProps> = ({
         focusedHighlightIndexRef.current = safeIndex;
         // 只动两张卡片的高亮，不触发任何 React 重渲染。
         applyFocusHighlight(safeIndex, prevIndex);
+        // ⚠️ 由「拖拽/滚轮后收尾」触发的聚焦，**不允许后续 effect 把画面吸过去**。
+        //
+        // 背景：拖拽中 rAF 循环会持续把「离屏幕中心最近的卡片」写进
+        // focusedIndexRef（为了松手那一下能立刻落高亮，避免重建 React 元素）。
+        // 但下面那个监听 focusedIndex 的 effect 会 dragX/dragY.set(-baseCoords[i])，
+        // 也就是把画面硬拉到该卡片正中央 —— 于是「松手后就自动跳到某张封面」。
+        //
+        // 那台 effect 本来是给「键盘导航 / 恢复导航状态」这类**明确的跳转**
+        // 用的，收尾时绝不能触发。所以这里记账，让 effect 只跳过这一次。
+        suppressRecenterIndexRef.current = safeIndex;
         // 低频同步给外部消费者（键盘导航 / aria / 父组件），
         // 用 startTransition 降为可中断的低优先级更新。
         startTransition(() => setFocusedIndex(safeIndex));
@@ -1781,6 +1803,16 @@ export const GridView: React.FC<GridViewProps> = ({
 
     // Keep the active focusedIndex centered when baseCoords changes on resize
     useEffect(() => {
+        // ⚠️ 这次 focusedIndex 变化若是「拖拽/滚轮收尾」同步过来的，就跳过吸附。
+        //
+        // 不跳过的话，用户松手后画面会"咔"地跳到离屏幕中心最近那张卡片的正中央
+        // —— 表现为「一滑动就自动跳到选好的封面上」，把自由浏览变成逐格吸附。
+        // 高亮环该画还是画（applyFocusHighlight 已经在 commitFocusedIndex 里做了），
+        // 只是**不动画面**。
+        if (suppressRecenterIndexRef.current === focusedIndex) {
+            suppressRecenterIndexRef.current = null;
+            return;
+        }
         if (baseCoords.length > 0 && focusedIndex >= 0 && focusedIndex < baseCoords.length) {
             const targetX = -baseCoords[focusedIndex].baseX;
             const targetY = -baseCoords[focusedIndex].baseY;
@@ -1788,7 +1820,7 @@ export const GridView: React.FC<GridViewProps> = ({
             dragY.set(targetY);
             updateRenderedIndexesForViewport(targetX, targetY, true);
         }
-    }, [baseCoords, updateRenderedIndexesForViewport]);
+    }, [baseCoords, focusedIndex, dragX, dragY, updateRenderedIndexesForViewport]);
 
     // Recenter the viewport on target item coordinate offset
     const centerOnIndex = (index: number, snap = true) => {
@@ -1797,6 +1829,10 @@ export const GridView: React.FC<GridViewProps> = ({
         const targetY = -baseCoords[index].baseY;
 
         commitFocusedIndex(index);
+        // release 掉 commitFocusedIndex 打的「不要吸附」标记 ——
+        // 这个函数自己就是**明确的跳转**，它下面的 animate 才是该做的吸附。
+        // 标记若被上面那个 effect 消费掉，就会在别的地方再触发一次多余的定位。
+        suppressRecenterIndexRef.current = null;
         updateRenderedIndexesForViewport(targetX, targetY, true);
 
         if (snap) {
@@ -1828,6 +1864,9 @@ export const GridView: React.FC<GridViewProps> = ({
         const restoredY = -restoredCoord.baseY;
 
         commitFocusedIndex(restoredIndex);
+        // 同上：恢复导航状态本身就是「明确的跳转」，下面这几行才是定位，
+        // 不能让 commitFocusedIndex 的标记把这次定位吞掉。
+        suppressRecenterIndexRef.current = null;
         dragX.set(restoredX);
         dragY.set(restoredY);
         wheelTargetRef.current = { x: restoredX, y: restoredY };
