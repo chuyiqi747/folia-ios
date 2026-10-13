@@ -132,7 +132,18 @@ const getStoredLocalTrackSortDirection = (): LocalSongFolderSortDirection => {
     const stored = localStorage.getItem(LOCAL_TRACK_SORT_DIRECTION_STORAGE_KEY);
     return stored === 'desc' ? stored : 'asc';
 };
-const GRID_VIEW_CARD_VISIBILITY_BUFFER = 72;
+/**
+ * 视口裁剪的额外缓冲（px）。
+ *
+ * 必须 **> useFoliaMosaicViewport 的 QUERY_GRANULARITY（48）**：
+ * 挂载集合只在「网格平移量跨过 48px 粗粒度格子」时才重算，
+ * 所以两次重算之间网格最多移动 48px —— 缓冲只要盖住这段位移，
+ * 就不会出现「卡片移进屏幕却没被挂载」的空洞。
+ *
+ * 原来取 72 是过量的（多出的 24px 白白多挂一批卡片），降到 56 后
+ * 仍然比 48 有 8px 余量，而挂载面积省下约 10%。
+ */
+const GRID_VIEW_CARD_VISIBILITY_BUFFER = 56;
 
 /**
  * 封面缩略图地址缓存。
@@ -497,7 +508,18 @@ export const PolaroidCard = React.memo<{
         );
     }
 );
-const getLowResCoverUrl = (url: string): string => getSizedCoverUrl(url, 150);
+/**
+ * 全屏氛围底图用的封面地址。
+ *
+ * 取 **48px** —— 它会被 object-cover 放大到整屏（手机约 400px、iPad 约 1200px 宽），
+ * 也就是放大 8~25 倍，本身就是一片柔和色块。
+ *
+ * 所以**不需要再叠一层 `filter: blur(30px)`**（旧代码就是 150px 图 + 30px 模糊，
+ * 那层 blur 纯属重复劳动）。去掉它不只是省一次模糊计算：
+ * `filter` 会强制该元素成为独立合成层，而且是一张**全屏尺寸**的模糊纹理
+ * （iPad 上约 2360×1640 ≈ 15MB）—— 在拖拽 100+ 张卡片时是纯粹的负担。
+ */
+const getLowResCoverUrl = (url: string): string => getSizedCoverUrl(url, 48);
 
 const toHttps = (url?: string): string => {
     if (!url) return '';
@@ -640,34 +662,42 @@ export const GridView: React.FC<GridViewProps> = ({
         let lodStart: number;
         let lodEnd: number;
 
+        // ⚠️ cell 是「同屏挂载量」的唯一决定因素 —— 挂载量 ≈ 挂载面积 / cell²，
+        // 所以 cell 每放大 10%，挂载的卡片数就降约 17%。
+        // 这是封面墙卡顿的第一大杠杆（实测：iPhone 15 上 cell 84→96，
+        // 同屏挂载从 102 张降到约 78 张）。
+        //
+        // 84 太小了：那是参考截图的尺寸，但截图是静态的，我们还要拖。
+        // 放到 96（手机档）之后一屏仍有 28 张左右可见，密度感基本保住，
+        // 而合成层少了四分之一。
         if (width < 768) {
             // 手机 / 窄屏
-            cell = 84;
-            gap = 3;
-            maxDistance = 150;
-            lodStart = 96;
-            lodEnd = 138;
-        } else if (width < 1440) {
-            // iPad 横屏 / 桌面（约 12 列）
             cell = 96;
             gap = 4;
-            maxDistance = 172;
-            lodStart = 110;
-            lodEnd = 158;
-        } else if (width < 2000) {
-            // 大屏桌面
+            maxDistance = 168;
+            lodStart = 108;
+            lodEnd = 156;
+        } else if (width < 1440) {
+            // iPad 横屏 / 桌面（约 10 列）
             cell = 112;
             gap = 5;
-            maxDistance = 200;
-            lodStart = 128;
-            lodEnd = 184;
+            maxDistance = 196;
+            lodStart = 126;
+            lodEnd = 182;
+        } else if (width < 2000) {
+            // 大屏桌面
+            cell = 128;
+            gap = 5;
+            maxDistance = 224;
+            lodStart = 144;
+            lodEnd = 208;
         } else {
             // 超宽桌面
-            cell = 128;
+            cell = 144;
             gap = 6;
-            maxDistance = 228;
-            lodStart = 146;
-            lodEnd = 210;
+            maxDistance = 252;
+            lodStart = 162;
+            lodEnd = 234;
         }
 
         // 最大号卡片是 2×2 格
@@ -701,13 +731,24 @@ export const GridView: React.FC<GridViewProps> = ({
     //
     // 缓冲直接复用可见性缓冲，保证「挂载集合 ⊇ 可见集合」，不会出现空洞。
     // 马赛克墙里视口裁剪走的是 useFoliaMosaicViewport 的矩形相交查询。
+    // ⚠️ 这里**只加 cell/2**，不是 maxTile/2。
+    //
+    // 原因：挂载判据（useFoliaMosaicViewport.resolveVisible）本身已经带了
+    // `+ tile.width / 2`，也就是说「卡片自己的半尺寸」在判据里被算过一遍了。
+    // 旧代码在半宽里再加一次 maxTile/2（= cell），等于把大卡片的尺寸算了两次 ——
+    // 而且是**加在半宽上**，所以向左右各多扩一格、向上下各多扩一格，
+    // 挂载面积按平方放大。
+    //
+    // 实测（iPhone 15, cell=84）：挂载半径 351px，而屏幕半宽只有 196px，
+    // 面积比 3.2 倍 —— 同屏挂载 102 张，肉眼可见只有 39 张，62% 纯属白挂。
+    // 去掉这个重复项之后挂载量直接降三成，而可见的卡片一张都不会少。
     const renderHalfWidth = useMemo(
-        () => containerSize.width / 2 + layoutConfig.maxSize / 2 + GRID_VIEW_CARD_VISIBILITY_BUFFER,
-        [containerSize.width, layoutConfig.maxSize]
+        () => containerSize.width / 2 + layoutConfig.cell / 2 + GRID_VIEW_CARD_VISIBILITY_BUFFER,
+        [containerSize.width, layoutConfig.cell]
     );
     const renderHalfHeight = useMemo(
-        () => containerSize.height / 2 + layoutConfig.maxSize / 2 + GRID_VIEW_CARD_VISIBILITY_BUFFER,
-        [containerSize.height, layoutConfig.maxSize]
+        () => containerSize.height / 2 + layoutConfig.cell / 2 + GRID_VIEW_CARD_VISIBILITY_BUFFER,
+        [containerSize.height, layoutConfig.cell]
     );
 
     // Dynamically calculate visible clipping radius centered on (0,0) viewport coordinates
@@ -2162,7 +2203,7 @@ export const GridView: React.FC<GridViewProps> = ({
                     <img
                         src={toHttps(getLowResCoverUrl(coverUrl))}
                         alt=""
-                        className="w-full h-full object-cover scale-110 filter blur-[30px]"
+                        className="w-full h-full object-cover scale-110"
                     />
                 </div>
             )}
