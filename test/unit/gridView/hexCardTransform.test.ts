@@ -56,9 +56,17 @@ describe('hexCardTransform', () => {
         expect(frame.visible).toBe(true);
         expect(frame.display).toBe('');
         expect(frame.distance).toBe(0);
-        // 中心卡片放大到 1.16 倍，zIndex = scaleRank(116) * 64 + sizeRank(0) = 7424
-        expect(frame.transform).toBe('translate3d(0px, 0px, 0) scale(1.16)');
-        expect(frame.zIndex).toBe('7424');
+        // ⚠️ v10 起改用 2D `translate` 而不是 `translate3d(x, y, 0)`：
+        // translate3d 的 z 参数（哪怕是 0）会让 WebKit 无条件把元素提升为
+        // 独立 3D 合成层，同屏几十上百张卡片就成了几十上百个图层。
+        // 2D translate 不会，卡片因而能和父层合并进同一个合成瓦片。
+        //
+        // 缩放档位也从 0.01 粗化到 0.05（SCALE_RANK_UNIT = 20）：
+        // 中心放大是连续衰减的，细档位会让一圈卡片不停地跨档重写样式。
+        // 1.16 经 0.05 量化后是 1.15（23/20）。
+        expect(frame.transform).toBe('translate(0px, 0px) scale(1.15)');
+        // zIndex = sizeRank(0) * 100 + scaleRank(23) = 23
+        expect(frame.zIndex).toBe('23');
         expect(frame.queueOpacity).toBe('1');
         expect(frame.queuePointerEvents).toBe('auto');
         expect(frame.playOpacity).toBe('1');
@@ -109,9 +117,18 @@ describe('hexCardTransform', () => {
         const large = computeHexCardState(makeCoord(0), 0, 0, options, 12);
 
         expect(large.zIndexValue).toBeGreaterThan(small.zIndexValue);
-        // 但「离中心更近」必须压过「尺寸更大」
+
+        // ⚠️ v10 起**刻意反转**了这条语义：现在「尺寸大」优先于「离中心近」。
+        //
+        // 旧版是 scaleRank * 64 + sizeRank，也就是「离中心近」压过「尺寸大」。
+        // 后果在紧凑马赛克里很突兀：一张 2×2 的大封面如果稍微离中心远一点，
+        // 就会被紧邻的 1×1 小封面盖住一角 —— 因为大卡片的目标是「整块可见」，
+        // 被压一角比小卡片被压更难看。
+        //
+        // 现在改成 sizeRank * 100 + scaleRank：大卡片永远在上层，
+        // 同一尺寸内部再按「离中心近者优先」排序。
         const largeOffCenter = computeHexCardState(makeCoord(200), 0, 0, options, 12);
-        expect(small.zIndexValue).toBeGreaterThan(largeOffCenter.zIndexValue);
+        expect(largeOffCenter.zIndexValue).toBeGreaterThan(small.zIndexValue);
     });
 
     it('skips repeated DOM writes when the cached state is unchanged', () => {

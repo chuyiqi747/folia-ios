@@ -28,9 +28,6 @@ export interface CardAnchor {
 
 export type HexCardPointerEvents = 'auto' | 'none';
 
-/** 缩放量化的分母：scaleRank = Math.round(scale * 100)，即 0.01 一档。 */
-const SCALE_RANK_UNIT = 100;
-
 /** 按钮透明度量化档数。50 档 ≈ 2% 一档，肉眼看不出台阶。 */
 const OPACITY_RANK_STEPS = 50;
 
@@ -43,11 +40,36 @@ const OPACITY_RANK_STEPS = 50;
  */
 const WALL_CENTER_SCALE = 1.16;
 
+/**
+ * 缩放量化步长的「粗档」宽度（0.05 一档）。
+ *
+ * ⚠️ 这是「图层合并」能否成立的关键参数之一。
+ *
+ * 旧版是 0.01 一档（SCALE_RANK_UNIT = 100）。而中心放大是随距离**连续**衰减的，
+ * 所以拖动时那一圈卡片会不停地跨档 → 每次都触发 `transform` + `zIndex` 重写。
+ *
+ * 改成 0.05 一档之后：跨档频率降到约 1/5，被重写的卡片数大幅减少；
+ * 而 0.05 的缩放台阶在手机上肉眼几乎不可见（96px 的卡片上差 4.8px，
+ * 而且是在运动过程中）。
+ *
+ * 故意做成「常量」而不是可调项：它同时影响 zIndex 的取值域（见下）。
+ */
+const SCALE_RANK_UNIT = 20;
+
 /** 放大的衰减指数。越大，放大区收得越紧（只有最中心一小片被强调）。 */
 const WALL_SCALE_FALLOFF = 1.6;
 
-/** zIndex = scaleRank * SIZE_RANK_BASE + sizeRank，保证「越靠中心越靠上」优先于「越大越靠上」。 */
-export const SIZE_RANK_BASE = 64;
+/**
+ * zIndex = sizeRank * 100 + scaleRank（scaleRank 现在最多 23）。
+ *
+ * ⚠️ 这里刻意**让 zIndex 只由「卡片大小」和「缩放档位」决定**，
+ * 不再像旧版那样细到 0.01 的缩放分辨率。
+ *
+ * 为什么重要：zIndex 变化会让 WebKit 重新排序合成层，而合成层重排
+ * 又会阻止「把多张卡片合并进父层的一个瓦片」这个优化。
+ * 跨档频率降 5 倍 + 取值域收窄，都是为了让这个属性尽量不动。
+ */
+export const SIZE_RANK_BASE = 100;
 
 export interface HexCardFrameOptions {
     clipRadius: number;
@@ -70,7 +92,7 @@ export interface HexCardState {
     visible: boolean;
     distanceSq: number;
     distance: number;
-    /** 量化后的缩放档位：100 = 1.00 倍。不可见时恒为 100。 */
+    /** 量化后的缩放档位：20 = 1.00 倍（SCALE_RANK_UNIT）。不可见时恒为 20。 */
     scaleRank: number;
     /** 「加入队列」按钮档位：-1 = 不显示，否则 1..50（50 = 全亮）。 */
     lodRank: number;
@@ -104,6 +126,19 @@ export interface HexCardFrameStyleCache {
 
 export interface HexCardStyleTarget {
     style: Pick<CSSStyleDeclaration, 'display' | 'transform' | 'opacity' | 'zIndex' | 'setProperty'>;
+    /**
+     * 可选：直接拿到卡片内部的两个按钮，绕开 CSS 自定义属性。
+     *
+     * ⚠️ 为什么不走 CSS 变量：`style.setProperty('--x', v)` 写的是**自定义属性**，
+     * WebKit 每次都要做一遍 style recalc，而且因为自定义属性是**可继承**的，
+     * 还要向下失效整棵子树（哪怕子树里根本没人读这个变量）。
+     * 拖拽时每帧 4~5 次这样的写入，在几十张卡片的规模下是实打实的开销。
+     *
+     * 直接写目标元素的 `opacity` / `transform` / `pointerEvents` 只是普通的
+     * 样式属性写入，不涉及继承失效，便宜得多。
+     */
+    playBtn?: HTMLElement | null;
+    queueBtn?: HTMLElement | null;
 }
 
 const formatNumber = (value: number, precision = 4): string => {
@@ -122,9 +157,19 @@ const formatNumber = (value: number, precision = 4): string => {
  *   2. 裁剪圆心在 (dx, dy)，卡片却画在 (2dx, 2dy)，两者错位 —— 拖得越远
  *      边缘空白越大，同时挂载了大量本不该存在的离屏卡片。
  * 同级组件 GridMap.tsx(581/700) 与 ArtistGridView.tsx(923) 就是正确写法。
+ *
+ * ⚠️⚠️ 改用 `translate` 而不是 `translate3d(x, y, 0)` —— 这是图层合并的关键。
+ *
+ * `translate3d` 的第三个参数会让 WebKit **无条件**把该元素提升为独立的
+ * 3D 合成层（哪怕 z 就是 0）。封面墙同屏 60~140 张卡片，就变成 60~140 个
+ * 独立合成层，每帧都要逐个合成、裁剪、光栅化 —— 这正是拖拽卡顿的主因。
+ *
+ * `translate`（2D）不会强制图层提升。当卡片只是随父层刚性平移、
+ * 自身 transform 不再变化时，WebKit 可以把它和父层**合并进同一个合成瓦片**，
+ * 合成开销从「N 个图层」降到「1 个瓦片」。
  */
 const buildTransform = (coord: CardAnchor, scale: number): string => (
-    `translate3d(${formatNumber(coord.baseX, 3)}px, ${formatNumber(coord.baseY, 3)}px, 0) scale(${formatNumber(scale)})`
+    `translate(${formatNumber(coord.baseX, 3)}px, ${formatNumber(coord.baseY, 3)}px) scale(${formatNumber(scale)})`
 );
 
 /** 只算数字、不做任何字符串分配的快速路径。 */
@@ -167,7 +212,7 @@ export const computeHexCardState = (
             lodRank: -1,
             playRank: -1,
             playScaleRank: 80,
-            zIndexValue: SCALE_RANK_UNIT * SIZE_RANK_BASE + sizeRank,
+            zIndexValue: sizeRank * SIZE_RANK_BASE + SCALE_RANK_UNIT,
         };
     }
 
@@ -214,7 +259,10 @@ export const computeHexCardState = (
         lodRank,
         playRank,
         playScaleRank,
-        zIndexValue: scaleRank * SIZE_RANK_BASE + sizeRank,
+        // 大的卡片压住小的（sizeRank 优先），同一大小里靠中心的压靠外的。
+        // 注意顺序与旧版相反 —— 旧版是 scaleRank 优先，那会让「越靠中心越靠上」
+        // 盖过卡片尺寸，导致 2×2 的大卡片被 1×1 的小卡片压住一角，很突兀。
+        zIndexValue: sizeRank * SIZE_RANK_BASE + scaleRank,
     };
 };
 
@@ -248,8 +296,17 @@ export const createHexCardFrameStyleCache = (frame: HexCardFrame): HexCardFrameS
 /**
  * 把状态写进 DOM —— **先比整数，再决定要不要造字符串**。
  *
- * 拖拽时同屏 100 多张卡片里，只有放大区那 8 张左右会跨档，
- * 其余卡片的 scaleRank / lodRank / playRank 全程不变，于是这里一次 style 都不写。
+ * ⚠️ 这里有两个刻意为之的取舍，都是为了「让图层能合并」：
+ *
+ * 1. **transform 与 zIndex 分开判断**。旧版把两者绑在一个条件里
+ *    （`scaleRank 或 zIndexValue 变了就一起写`），结果是缩放变化时
+ *    连 transform 也重写一遍、zIndex 也重排一次。而 zIndex 变化会让
+ *    WebKit 重新排序合成层 —— 这是阻止图层合并的头号杀手。
+ *    现在两者各自只在真正需要时写。
+ *
+ * 2. **只在卡片缩放档位变化时写 transform**，而档位已经从 0.01 粗化到 0.05。
+ *    拖拽时只有中心放大那一圈里极少数卡片会跨档，其余几十张卡片的
+ *    transform 全程一次都不写 —— 它们就能和父层合并成同一个合成瓦片。
  */
 export const applyHexCardState = (
     target: HexCardStyleTarget,
@@ -268,30 +325,66 @@ export const applyHexCardState = (
 
     if (!state.visible) return didWrite;
 
-    if (cache.scaleRank !== state.scaleRank || cache.zIndexValue !== state.zIndexValue) {
+    if (cache.scaleRank !== state.scaleRank) {
         style.transform = buildTransform(coord, state.scaleRank / SCALE_RANK_UNIT);
-        style.zIndex = String(state.zIndexValue);
         cache.scaleRank = state.scaleRank;
+        didWrite = true;
+    }
+
+    if (cache.zIndexValue !== state.zIndexValue) {
+        style.zIndex = String(state.zIndexValue);
         cache.zIndexValue = state.zIndexValue;
         didWrite = true;
     }
 
+    // ⚠️ 按钮显隐优先「直接写按钮元素」，CSS 自定义属性只作为回退路径。
+    //
+    // 为什么：`style.setProperty('--queue-opacity', v)` 写的是自定义属性，
+    // WebKit 每次都要跑一遍 style recalc；更贵的是自定义属性**可继承**，
+    // 于是还要向下失效整棵子树 —— 哪怕子树里没人读这个变量。
+    // 拖拽时这里每帧 4~5 次这样的写入，在几十张卡片的规模下是实打实的开销。
+    //
+    // 直接写 `element.style.opacity` 只是普通属性写入，不触发继承失效，便宜得多。
+    // ArtistGridView / GridMap 复用 PolaroidCard 时仍然只提供 style 容器，
+    // 所以保留 CSS 变量回退。
     if (cache.lodRank !== state.lodRank) {
-        style.setProperty('--queue-opacity', state.lodRank < 0 ? '0' : rankToOpacity(state.lodRank));
-        style.setProperty('--queue-pe', state.lodRank < 0 ? 'none' : 'auto');
+        const queueBtn = target.queueBtn;
+        const opacity = state.lodRank < 0 ? '0' : rankToOpacity(state.lodRank);
+        const pe: HexCardPointerEvents = state.lodRank < 0 ? 'none' : 'auto';
+        if (queueBtn) {
+            queueBtn.style.opacity = opacity;
+            queueBtn.style.pointerEvents = pe;
+        } else {
+            style.setProperty('--queue-opacity', opacity);
+            style.setProperty('--queue-pe', pe);
+        }
         cache.lodRank = state.lodRank;
         didWrite = true;
     }
 
     if (cache.playRank !== state.playRank) {
-        style.setProperty('--play-opacity', state.playRank < 0 ? '0' : rankToOpacity(state.playRank));
-        style.setProperty('--play-pe', state.playRank < 0 ? 'none' : 'auto');
+        const playBtn = target.playBtn;
+        const opacity = state.playRank < 0 ? '0' : rankToOpacity(state.playRank);
+        const pe: HexCardPointerEvents = state.playRank < 0 ? 'none' : 'auto';
+        if (playBtn) {
+            playBtn.style.opacity = opacity;
+            playBtn.style.pointerEvents = pe;
+        } else {
+            style.setProperty('--play-opacity', opacity);
+            style.setProperty('--play-pe', pe);
+        }
         cache.playRank = state.playRank;
         didWrite = true;
     }
 
     if (cache.playScaleRank !== state.playScaleRank) {
-        style.setProperty('--play-scale', String(Number((state.playScaleRank / 100).toFixed(3))));
+        const playBtn = target.playBtn;
+        const scale = String(Number((state.playScaleRank / 100).toFixed(3)));
+        if (playBtn) {
+            playBtn.style.transform = `scale(${scale})`;
+        } else {
+            style.setProperty('--play-scale', scale);
+        }
         cache.playScaleRank = state.playScaleRank;
         didWrite = true;
     }

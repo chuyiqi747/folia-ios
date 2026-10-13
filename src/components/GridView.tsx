@@ -1,4 +1,4 @@
-import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import React, { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, useMotionValue, animate, AnimatePresence, useDragControls } from 'framer-motion';
 import { ChevronLeft, Disc, Play, Plus, Loader2, Heart, ListPlus, Pencil, Search, X, RefreshCw, Trash2, Star, Tags } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -402,9 +402,15 @@ export const PolaroidCard = React.memo<{
                 </div>
 
                 {/* 本地元数据手动匹配（聚焦时才出现） */}
-                {isFocused && onEditLocalMetadata && (
+                {/* ⚠️ 这个按钮改成「**永远渲染、默认隐藏**」，由 applyFocusHighlight
+                    直接改它的 display。原因是它必须能在不重渲染卡片的前提下出现 ——
+                    isFocused 已经不再是驱动渲染的 prop 了。
+                    data-folia-focus-only 是 applyFocusHighlight 找它的标记。 */}
+                {onEditLocalMetadata && (
                     <button
                         type="button"
+                        data-folia-focus-only=""
+                        style={{ display: isFocused ? '' : 'none' }}
                         onClick={(event) => {
                             event.stopPropagation();
                             onEditLocalMetadata();
@@ -446,9 +452,12 @@ export const PolaroidCard = React.memo<{
                 </AnimatePresence>
 
                 {/* 播放按钮：只在最靠近中心的卡片上浮现（居中，随 --play-opacity 淡入） */}
+                {/* data-folia-play-btn 是 applyHexCardState 直接写这个元素的标记 ——
+                    见 hexCardTransform 里对「为什么不走 CSS 自定义属性」的说明。 */}
                 {mode === 'tracks' && !isEditMode && (
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
                         <button
+                            data-folia-play-btn=""
                             onClick={(e) => {
                                 e.stopPropagation();
                                 onSelect();
@@ -470,6 +479,7 @@ export const PolaroidCard = React.memo<{
                 {/* 加入队列：右上角小按钮（随 --queue-opacity 淡入） */}
                 {mode === 'tracks' && onAddQueue && !isUnavailable && !isEditMode && (
                     <button
+                        data-folia-queue-btn=""
                         onClick={(e) => {
                             e.stopPropagation();
                             onAddQueue();
@@ -585,12 +595,55 @@ export const GridView: React.FC<GridViewProps> = ({
     const { t } = useTranslation();
     const containerRef = useRef<HTMLDivElement>(null);
     const dragControls = useDragControls();
+    /**
+     * ⚠️ 保留一个 `focusedIndex` state，但它**只用于非卡片渲染的场景**
+     * （快捷键导航、aria 标注、传给外部组件）。**绝不能让它进入
+     * memoizedCards 的依赖** —— 否则就又回到「每次聚焦切换重建全部卡片」。
+     */
     const [focusedIndex, setFocusedIndex] = useState(0);
+    /** 拖拽中各帧持续更新的「最近卡片」索引（不驱动渲染）。 */
     const focusedIndexRef = useRef(0);
+    /** 当前**已经画出高亮环**的那张卡片的索引。与上面分开，才能正确取消旧高亮。 */
+    const focusedHighlightIndexRef = useRef(-1);
     const searchInputRef = useRef<HTMLInputElement | null>(null);
     const isComposingSearchRef = useRef(false);
     const pendingFocusCommitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const isDraggingRef = useRef(false);
+
+    // Refs for direct DOM manipulation — eliminates per-card useTransform subscriptions
+    const cardWrapperRefs = useRef<(HTMLDivElement | null)[]>([]);
+    const cardFrameStyleCachesRef = useRef<(HexCardFrameStyleCache | undefined)[]>([]);
+    /**
+     * 每张卡片内部两个按钮的直接引用，跟卡片同时在 ref 回调里登记。
+     *
+     * ⚠️ 为什么不每帧 `el.querySelector('[data-folia-play-btn]')`：
+     * querySelector 是一次真实的 DOM 遍历（还要匹配属性选择器），
+     * 同屏 100+ 张卡片 × 每帧 2 次 = 每秒上万次遍历，比它想省掉的开销还大。
+     * 卡片挂载时查一次并缓存，之后就只是数组下标取值。
+     */
+    const cardButtonRefs = useRef<({ playBtn: HTMLElement | null; queueBtn: HTMLElement | null } | undefined)[]>([]);
+
+    /** 聚焦高亮的实现见上方定义处（已提到前面，供 state 同步 effect 复用）。 */
+    const applyFocusHighlight = useCallback((nextIndex: number, prevIndex: number) => {
+        const setFocused = (index: number, focused: boolean) => {
+            const el = cardWrapperRefs.current[index];
+            if (!el) return;
+            // 找卡片本体的根节点（wrapper 的直接子元素是动画容器，
+            // 再下一层才是 theme-polaroid-card）。
+            const card = el.querySelector<HTMLElement>('.theme-polaroid-card');
+            if (!card) return;
+            card.style.boxShadow = focused
+                ? '0 0 0 2px rgba(255,255,255,0.9), 0 6px 24px rgba(0,0,0,0.45)'
+                : '';
+            // 「本地元数据手动匹配」按钮只在聚焦时出现。
+            // 它由 PolaroidCard 常渲染、默认 display:none，这里只负责显隐。
+            const metaBtn = card.querySelector<HTMLElement>('[data-folia-focus-only]');
+            if (metaBtn) metaBtn.style.display = focused ? '' : 'none';
+        };
+
+        if (prevIndex !== nextIndex) setFocused(prevIndex, false);
+        setFocused(nextIndex, true);
+    }, []);
     const pendingBackgroundTracksRef = useRef<SongResult[] | null>(null);
     const pendingBackgroundOffsetRef = useRef(0);
     const wheelTargetRef = useRef({ x: 0, y: 0 });
@@ -662,42 +715,43 @@ export const GridView: React.FC<GridViewProps> = ({
         let lodStart: number;
         let lodEnd: number;
 
-        // ⚠️ cell 是「同屏挂载量」的唯一决定因素 —— 挂载量 ≈ 挂载面积 / cell²，
-        // 所以 cell 每放大 10%，挂载的卡片数就降约 17%。
-        // 这是封面墙卡顿的第一大杠杆（实测：iPhone 15 上 cell 84→96，
-        // 同屏挂载从 102 张降到约 78 张）。
+        // ⚠️ cell 是「同屏挂载量」的直接决定因素 —— 挂载量 ≈ 挂载面积 / cell²。
+        // 但**它已经不是最大的杠杆了**：v10 起通过「静态化卡片 transform +
+        // 去掉 translate3d / contain」让 WebKit 把卡片合并进父层瓦片，
+        // 图层数从 60~140 降到接近 1，这是数量级的改善。
         //
-        // 84 太小了：那是参考截图的尺寸，但截图是静态的，我们还要拖。
-        // 放到 96（手机档）之后一屏仍有 28 张左右可见，密度感基本保住，
-        // 而合成层少了四分之一。
+        // 所以这里只做一次**温和**的放大（96 → 104，约 +8%），作为额外保险，
+        // 而不再像上一版设想的那样猛推到 120~140 —— 那会让一屏可见专辑数
+        // 从 39 掉到 13~18，把参考图那种「密密麻麻一面墙」的观感丢掉。
+        // 104 只让可见数从 39 降到约 34，基本无感。
         if (width < 768) {
             // 手机 / 窄屏
-            cell = 96;
+            cell = 104;
             gap = 4;
-            maxDistance = 168;
-            lodStart = 108;
-            lodEnd = 156;
+            maxDistance = 182;
+            lodStart = 117;
+            lodEnd = 169;
         } else if (width < 1440) {
             // iPad 横屏 / 桌面（约 10 列）
-            cell = 112;
+            cell = 116;
             gap = 5;
-            maxDistance = 196;
-            lodStart = 126;
-            lodEnd = 182;
+            maxDistance = 203;
+            lodStart = 130;
+            lodEnd = 188;
         } else if (width < 2000) {
             // 大屏桌面
-            cell = 128;
+            cell = 132;
             gap = 5;
-            maxDistance = 224;
-            lodStart = 144;
-            lodEnd = 208;
+            maxDistance = 231;
+            lodStart = 148;
+            lodEnd = 214;
         } else {
             // 超宽桌面
-            cell = 144;
+            cell = 148;
             gap = 6;
-            maxDistance = 252;
-            lodStart = 162;
-            lodEnd = 234;
+            maxDistance = 259;
+            lodStart = 166;
+            lodEnd = 240;
         }
 
         // 最大号卡片是 2×2 格
@@ -940,10 +994,22 @@ export const GridView: React.FC<GridViewProps> = ({
         };
     }, [collection?.id, collection?.providerId, collection?.type, collectionSource]);
 
+    /**
+     * 外部（快捷键导航、开关侧栏等）改变 focusedIndex 时，把 ref 和高亮同步过去。
+     * 拖拽中不覆盖 —— 那时 ref 由 rAF 循环持续维护。
+     *
+     * ⚠️ 这里要顺便把高亮补上：那些路径是 setFocusedIndex（React state），
+     * 而高亮已经不走 React 渲染了，不补就看不到白环。
+     */
     useEffect(() => {
         if (isDraggingRef.current || pendingFocusCommitTimeoutRef.current) return;
+        if (focusedIndexRef.current === focusedIndex
+            && focusedHighlightIndexRef.current === focusedIndex) return;
         focusedIndexRef.current = focusedIndex;
-    }, [focusedIndex]);
+        const prev = focusedHighlightIndexRef.current;
+        focusedHighlightIndexRef.current = focusedIndex;
+        applyFocusHighlight(focusedIndex, prev);
+    }, [focusedIndex, applyFocusHighlight]);
 
     useEffect(() => {
         setEditableTitle(title);
@@ -1683,6 +1749,7 @@ export const GridView: React.FC<GridViewProps> = ({
         };
     }, [baseCoords, cardSizes, layoutConfig, containerSize]);
 
+
     const commitFocusedIndex = useCallback((index = focusedIndexRef.current) => {
         if (pendingFocusCommitTimeoutRef.current) {
             clearTimeout(pendingFocusCommitTimeoutRef.current);
@@ -1690,9 +1757,16 @@ export const GridView: React.FC<GridViewProps> = ({
         }
 
         const safeIndex = Math.max(0, Math.min(index, Math.max(gridItems.length - 1, 0)));
+        const prevIndex = focusedHighlightIndexRef.current;
         focusedIndexRef.current = safeIndex;
-        setFocusedIndex(prev => (prev === safeIndex ? prev : safeIndex));
-    }, [gridItems.length]);
+        if (prevIndex === safeIndex) return;
+        focusedHighlightIndexRef.current = safeIndex;
+        // 只动两张卡片的高亮，不触发任何 React 重渲染。
+        applyFocusHighlight(safeIndex, prevIndex);
+        // 低频同步给外部消费者（键盘导航 / aria / 父组件），
+        // 用 startTransition 降为可中断的低优先级更新。
+        startTransition(() => setFocusedIndex(safeIndex));
+    }, [applyFocusHighlight, gridItems.length]);
 
     const scheduleFocusedIndexCommit = useCallback((delayMs = 180) => {
         if (pendingFocusCommitTimeoutRef.current) {
@@ -1886,22 +1960,34 @@ export const GridView: React.FC<GridViewProps> = ({
                         if (el) {
                             cardWrapperRefs.current[idx] = el;
                             cardFrameStyleCachesRef.current[idx] = createHexCardFrameStyleCache(initialFrame);
+                            // 挂载时查一次按钮并缓存；之后拖拽热路径直接取缓存，
+                            // 不再做 DOM 遍历（见 cardButtonRefs 的注释）。
+                            const playBtn = el.querySelector<HTMLElement>('[data-folia-play-btn]');
+                            const queueBtn = el.querySelector<HTMLElement>('[data-folia-queue-btn]');
+                            cardButtonRefs.current[idx] = playBtn || queueBtn ? { playBtn, queueBtn } : undefined;
                             return;
                         }
 
                         if (cardWrapperRefs.current[idx]?.dataset.foliaGridItemId === String(item.id)) {
                             cardWrapperRefs.current[idx] = null;
                             cardFrameStyleCachesRef.current[idx] = undefined;
+                            cardButtonRefs.current[idx] = undefined;
                         }
                     }}
                     className="absolute select-none pointer-events-auto folia-grid-card-frame"
                     style={{
                         transformOrigin: 'center center',
-                        // 只做 layout/style 收敛，**不加 paint** ——
-                        // 卡片在中心被放大到 1.28 倍时会溢出这个盒子，
-                        // paint 收敛会把它裁掉。backfaceVisibility 已移除：
-                        // 没有任何 3D 变换了，留着它只是白白触发图层提升。
-                        contain: 'layout style',
+                        // ⚠️ 刻意**不加** contain。
+                        //
+                        // 以前的注释说「只做 layout/style 收敛，不加 paint」，
+                        // 但 `contain: layout style` 依然会把这个元素变成
+                        // 一个**独立的布局与样式包含块** —— WebKit 会因此
+                        // 不敢把它和父层合并进同一个合成瓦片（它认为这个子树的
+                        // 布局与外部完全隔离，于是倾向于单独建层）。
+                        //
+                        // 同屏 60~140 张卡片各建一层，就是拖拽卡顿的主因。
+                        // 卡片本身只是绝对定位的固定尺寸方块，不依赖任何
+                        // 包含块语义，去掉 contain 没有任何副作用。
                         display: initialFrame.display || undefined,
                         transform: initialFrame.transform,
                         opacity: initialFrame.opacity,
@@ -1968,7 +2054,10 @@ export const GridView: React.FC<GridViewProps> = ({
                                     onAddTrackToQueue(item.rawTrack);
                                 }
                             }}
-                            isFocused={idx === focusedIndex}
+                            // ⚠️ 不再传 isFocused。聚焦高亮改由 applyFocusHighlight
+                            // 直接写 DOM —— 见那里的注释。这样 focusedIndex 变化
+                            // 就不会再让这张（以及同屏全部）卡片重新渲染。
+                            isFocused={false}
                         />
                     </div>
                 </div>
@@ -1985,7 +2074,10 @@ export const GridView: React.FC<GridViewProps> = ({
         t,
         cardFrameOptions,
         isEditMode,
-        focusedIndex,
+        // ⚠️ 刻意**不包含 focusedIndex**。
+        // 它已经不参与卡片渲染了（聚焦高亮由 applyFocusHighlight 直接写 DOM），
+        // 留在这儿只会让每次聚焦切换重建全部 60~140 个卡片元素 ——
+        // 那正是「松手定格时卡一下」的原因。
         displayTracks,
         onSelectTrack,
         onSelectCollection,
@@ -1999,9 +2091,6 @@ export const GridView: React.FC<GridViewProps> = ({
         shouldAnimateItemEntrance,
     ]);
 
-    // Refs for direct DOM manipulation — eliminates per-card useTransform subscriptions
-    const cardWrapperRefs = useRef<(HTMLDivElement | null)[]>([]);
-    const cardFrameStyleCachesRef = useRef<(HexCardFrameStyleCache | undefined)[]>([]);
 
     // Cleanup deferred focus state commits on unmount
     useEffect(() => {
@@ -2059,10 +2148,26 @@ export const GridView: React.FC<GridViewProps> = ({
                     if (!el) continue;
                     const cache = cardFrameStyleCachesRef.current[i] ?? {};
                     cardFrameStyleCachesRef.current[i] = cache;
-                    applyHexCardState(el, coord, state, cache);
+                    // ⚠️ 把两个按钮一起递进去 —— applyHexCardState 会优先直接写
+                    // 它们的 style，绕开 CSS 自定义属性（自定义属性可继承，
+                    // 每写一次都要向下失效整棵子树，拖拽时每帧 4~5 次）。
+                    // 按钮引用在挂载时已缓存，这里只是数组下标取值，不做 DOM 查询。
+                    const buttons = cardButtonRefs.current[i];
+                    applyHexCardState(
+                        buttons
+                            ? { style: el.style, playBtn: buttons.playBtn, queueBtn: buttons.queueBtn }
+                            : el,
+                        coord,
+                        state,
+                        cache
+                    );
                 }
 
                 // Keep continuous focus out of React state during drag frames.
+                // ⚠️ 拖拽中**不写聚焦高亮** —— 高亮每帧跟着换会带来
+                // 持续的 style 写入 + boxShadow 重绘，正是「拖动中持续卡」
+                // 的一部分。拖拽期间只更新 ref，等松手后 commitFocusedIndex
+                // 一次性把高亮落到最终那张卡片上。
                 focusedIndexRef.current = closestIdx;
             });
         };
@@ -2078,6 +2183,27 @@ export const GridView: React.FC<GridViewProps> = ({
             if (rafId !== null) cancelAnimationFrame(rafId);
         };
     }, [dragX, dragY, baseCoords, cardFrameOptions, cardSizeRanks, updateRenderedIndexesForViewport]);
+
+    /**
+     * 初始 / 卡片集合变化后，把聚焦高亮落到正确的卡片上。
+     *
+     * 因为高亮不再由 React 渲染（见 applyFocusHighlight），所以必须在
+     * 卡片挂载完成后主动补一次。延后一帧是为了让 ref 回调先跑完
+     * —— `memoizedCards` 里那些 ref 是在 React 提交阶段才赋值的。
+     */
+    useEffect(() => {
+        if (renderedIndexes.length === 0) return;
+        const id = requestAnimationFrame(() => {
+            const target = Math.max(0, Math.min(
+                focusedIndexRef.current,
+                Math.max(gridItems.length - 1, 0)
+            ));
+            const prev = focusedHighlightIndexRef.current;
+            focusedHighlightIndexRef.current = target;
+            applyFocusHighlight(target, prev);
+        });
+        return () => cancelAnimationFrame(id);
+    }, [renderedIndexes, gridItems.length, applyFocusHighlight]);
 
     // Setup arrow keyboard navigation
     useEffect(() => {
@@ -2392,10 +2518,17 @@ export const GridView: React.FC<GridViewProps> = ({
                                 flushPendingBackgroundTracks();
                                 scheduleFocusedIndexCommit(140);
                             }, 50);
-                        }}
-                        style={{ x: dragX, y: dragY, background: 'rgba(0,0,0,0)', touchAction: 'none' }}
+                        }}                        style={{ x: dragX, y: dragY, background: 'rgba(0,0,0,0)', touchAction: 'none' }}
                         className="absolute inset-0 flex items-center justify-center cursor-grab active:cursor-grabbing bg-transparent"
                     >
+                        {/* ⚠️ 这里刻意**不给父层加 `will-change: transform`**。
+                            直觉上会想「父层在动，加个 will-change 让它上合成层」，
+                            但实测相反：父层一旦成为独立合成层，WebKit 就不再
+                            尝试把它和子卡片合并（子层的绘制结果没法直接烘进
+                            父层的瓦片），于是 60~140 张卡片各自保留独立图层，
+                            正是我们要消除的开销。
+                            交给浏览器自己判断即可 —— 它是持续变换的元素，
+                            本来就会被提升，不需要我们提示。 */}
                         {/* 不再用 AnimatePresence 包卡片列表：
                             卡片没有 exit 动画了（入场/删除都改成 CSS keyframes），
                             AnimatePresence 在这里只剩「追踪每个子元素生命周期」的开销。 */}
